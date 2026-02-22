@@ -1,9 +1,9 @@
 [![black-lint](https://github.com/vroomfondel/minimatrix/actions/workflows/checkblack.yml/badge.svg)](https://github.com/vroomfondel/minimatrix/actions/workflows/checkblack.yml)
 [![mypy and pytests](https://github.com/vroomfondel/minimatrix/actions/workflows/mypynpytests.yml/badge.svg)](https://github.com/vroomfondel/minimatrix/actions/workflows/mypynpytests.yml)
-![Cumulative Clones](https://img.shields.io/endpoint?logo=github&url=https://gist.githubusercontent.com/vroomfondel/e2b37502d2c026d6b3c103eba37b16ac/raw/minimatrix_clone_count.json)
+[![Cumulative Clones](https://img.shields.io/endpoint?logo=github&url=https://gist.githubusercontent.com/vroomfondel/e2b37502d2c026d6b3c103eba37b16ac/raw/minimatrix_clone_count.json)](https://github.com/vroomfondel/minimatrix)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/minimatrix?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=PyPi+Downloads)](https://pepy.tech/projects/minimatrix)
 
-[![Gemini_Generated_Image_2bsor82bsor82bso_250x250.png](https://raw.githubusercontent.com/vroomfondel/minimatrix/main/Gemini_Generated_Image_2bsor82bsor82bso_250x250.png)](https://github.com/minimatrix/sipstuff)
+[![Gemini_Generated_Image_2bsor82bsor82bso_250x250.png](https://raw.githubusercontent.com/vroomfondel/minimatrix/main/Gemini_Generated_Image_2bsor82bsor82bso_250x250.png)](https://github.com/vroomfondel/minimatrix)
 
 # minimatrix
 
