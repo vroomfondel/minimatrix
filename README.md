@@ -1,9 +1,11 @@
-# minimatrix
-
 [![black-lint](https://github.com/vroomfondel/minimatrix/actions/workflows/checkblack.yml/badge.svg)](https://github.com/vroomfondel/minimatrix/actions/workflows/checkblack.yml)
 [![mypy and pytests](https://github.com/vroomfondel/minimatrix/actions/workflows/mypynpytests.yml/badge.svg)](https://github.com/vroomfondel/minimatrix/actions/workflows/mypynpytests.yml)
 [![Docker Pulls](https://img.shields.io/docker/pulls/xomoxcc/minimatrix?logo=docker)](https://hub.docker.com/r/xomoxcc/minimatrix/tags)
 [![PyPI Downloads](https://static.pepy.tech/personalized-badge/minimatrix?period=total&units=INTERNATIONAL_SYSTEM&left_color=BLACK&right_color=GREEN&left_text=PyPi+Downloads)](https://pepy.tech/projects/minimatrix)
+
+[![Gemini_Generated_Image_2bsor82bsor82bso_250x250.png](https://raw.githubusercontent.com/vroomfondel/sipstuff/main/Gemini_Generated_Image_2bsor82bsor82bso_250x250.png)](https://hub.docker.com/r/xomoxcc/sipstuff/tags)
+
+# minimatrix
 
 Standalone Matrix CLI client with E2E encryption. Send messages, listen to rooms,
 and list joined rooms — all from the command line.
