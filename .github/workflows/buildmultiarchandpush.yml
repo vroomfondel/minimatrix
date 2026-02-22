@@ -45,11 +45,13 @@ jobs:
         run: |
           BUILDTIME=$(TZ='Europe/Berlin' date +'%Y-%m-%d %H:%M:%S %Z')
           PYTHON_VERSION=3.14
+          DEBIAN_VERSION=slim-trixie
 
-          TAGS="xomoxcc/minimatrix:latest"
+          TAGS="xomoxcc/minimatrix:latest,xomoxcc/minimatrix:${PYTHON_VERSION}-${DEBIAN_VERSION}"
 
           echo "buildtime=${BUILDTIME}" >> $GITHUB_OUTPUT
           echo "python_version=${PYTHON_VERSION}" >> $GITHUB_OUTPUT
+          echo "debian_version=${DEBIAN_VERSION}" >> $GITHUB_OUTPUT
           echo "tags=${TAGS}" >> $GITHUB_OUTPUT
 
       - name: Build and push
@@ -62,3 +64,4 @@ jobs:
           build-args: |
             buildtime=${{ steps.build_vars.outputs.buildtime }}
             python_version=${{ steps.build_vars.outputs.python_version }}
+            debian_version=${{ steps.build_vars.outputs.debian_version }}
