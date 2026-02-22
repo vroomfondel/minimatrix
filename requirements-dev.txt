@@ -7,6 +7,6 @@ isort==7.0.*
 black==26.1.*
 mypy==1.19.*
 pytest==9.0.*
-
+types-PyYAML
 types-tabulate
 pygithub
