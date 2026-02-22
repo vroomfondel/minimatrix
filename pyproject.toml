@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+packages = ["minimatrix"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[project]
+name = "minimatrix"
+dynamic = ["version"]
+authors = [
+  { name="Henning Thieß", email="ht@xomox.cc" },
+]
+description = "Standalone Matrix CLI client: send messages, listen to rooms, and manage E2E encrypted communication"
+readme = "README.md"
+requires-python = ">=3.14"
+license-files = ["LICENSE.md"]
+
+keywords = ["matrix", "matrix-client", "cli", "e2e", "encryption", "nio", "chat", "messaging"]
+
+# https://pypi.org/classifiers/
+classifiers = [
+    "Development Status :: 4 - Beta",
+
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+
+    "Topic :: Communications :: Chat",
+
+    "License :: OSI Approved :: GNU Lesser General Public License v3 (LGPLv3)",
+    "Operating System :: POSIX :: Linux",
+]
+
+dependencies = [
+    'PyYAML>=6.0',
+    'loguru>=0.7.0',
+    'matrix-nio[e2e]>=0.25.0',
+    'tabulate>=0.9.0'
+]
+
+[project.urls]
+Homepage = "https://github.com/vroomfondel/minimatrix"
+Repository = "https://github.com/vroomfondel/minimatrix"
+Issues = "https://github.com/vroomfondel/minimatrix/issues"
+
+[tool.hatch.version]
+path = "minimatrix/__init__.py"
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.black]
+line-length = 120
+target-version = ["py313"]
+
+[tool.pytest.ini_options]
+python_files = "tests/*.py"
+
+[tool.mypy]
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+# plugins = ["pydantic.mypy"]
+exclude = '''(?x)(
+    \.venv
+    | venv
+    | \.pyi$
+    )'''
+
+[[tool.mypy.overrides]]
+module = ["cv2", "numpy", "pytesseract", "nio", "nio.*"]
+ignore_missing_imports = true
+
+
+[project.scripts]
+minimatrix = "minimatrix.cli:main"
