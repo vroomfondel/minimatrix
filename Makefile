@@ -83,3 +83,29 @@ dist/.touchfile_push: dist/minimatrix-$(VERSION).tar.gz dist/minimatrix-$(VERSIO
 	@touch dist/.touchfile_push
 
 pypipush: venv dist/.touchfile_push
+
+
+update-all-dockerhub-readmes:
+	@AUTH=$$(jq -r '.auths["https://index.docker.io/v1/"].auth' ~/.docker/config.json | base64 -d) && \
+	USERNAME=$$(echo "$$AUTH" | cut -d: -f1) && \
+	PASSWORD=$$(echo "$$AUTH" | cut -d: -f2-) && \
+	TOKEN=$$(curl -s -X POST https://hub.docker.com/v2/users/login/ \
+	  -H "Content-Type: application/json" \
+	  -d '{"username":"'"$$USERNAME"'","password":"'"$$PASSWORD"'"}' \
+	  | jq -r .token) && \
+	for mapping in \
+	  ".:xomoxcc/minimatrix"; do \
+	  DIR=$$(echo "$$mapping" | cut -d: -f1) && \
+	  REPO=$$(echo "$$mapping" | cut -d: -f2) && \
+	  FILE="$$DIR/DOCKERHUB_OVERVIEW.md" && \
+	  if [ -f "$$FILE" ]; then \
+	    echo "Updating $$REPO from $$FILE..." && \
+	    curl -s -X PATCH "https://hub.docker.com/v2/repositories/$$REPO/" \
+	      -H "Authorization: Bearer $$TOKEN" \
+	      -H "Content-Type: application/json" \
+	      -d "{\"full_description\": $$(jq -Rs . "$$FILE")}" \
+	      | jq -r '.full_description | length | "  Updated: \(.) chars"'; \
+	  else \
+	    echo "Skipping $$REPO - $$FILE not found"; \
+	  fi; \
+	done
