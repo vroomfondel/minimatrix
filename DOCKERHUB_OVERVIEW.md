@@ -10,7 +10,7 @@
 # minimatrix
 
 Standalone Matrix CLI client with E2E encryption. Send messages, listen to rooms,
-and list joined rooms — all from the command line.
+manage invitations, and list joined rooms — all from the command line.
 
 - **Source**: [GitHub](https://github.com/vroomfondel/minimatrix)
 - **PyPI**: [minimatrix](https://pypi.org/project/minimatrix/)

@@ -11,12 +11,8 @@
 # minimatrix
 
 Standalone Matrix CLI client with E2E encryption. Send messages, listen to rooms,
-and list joined rooms — all from the command line.
+manage invitations, and list joined rooms — all from the command line.
 
-## Status
-
-**Beta (v0.0.1)** — core CLI with E2E encryption, password/SSO/JWT authentication,
-and basic room operations are implemented.
 
 ## Features
 
@@ -45,9 +41,8 @@ pip install minimatrix
 ```bash
 git clone https://github.com/vroomfondel/minimatrix.git
 cd minimatrix
-make venv
+make install
 source .venv/bin/activate
-pip install .
 ```
 
 ### Docker
@@ -300,7 +295,7 @@ jwt_config:
 
 | Target | Description |
 |---|---|
-| `make venv` | Create virtualenv and install all dependencies |
+| `make install` | Create virtualenv and install all dependencies |
 | `make tests` | Run pytest |
 | `make lint` | Format code with black (line length 120) |
 | `make isort` | Sort imports with isort |
@@ -309,6 +304,8 @@ jwt_config:
 | `make prepare` | Run tests + commit-checks |
 | `make pypibuild` | Build sdist + wheel with hatch |
 | `make pypipush` | Publish to PyPI with hatch |
+
+Tests are pure unit tests (no Matrix server or network access required) and can be run freely with `make tests`. Pre-commit hooks (`.pre-commit-config.yaml`) include **gitleaks** for secret scanning — be careful not to commit Matrix credentials or tokens.
 
 ## License
 This project is licensed under the LGPL where applicable/possible — see [LICENSE.md](LICENSE.md). Some files/parts may use other licenses: [MIT](LICENSEMIT.md) | [GPL](LICENSEGPL.md) | [LGPL](LICENSELGPL.md). Always check per‑file headers/comments.
