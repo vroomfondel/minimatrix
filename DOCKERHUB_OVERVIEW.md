@@ -10,7 +10,7 @@
 # minimatrix
 
 Standalone Matrix CLI client with E2E encryption. Send messages, listen to rooms,
-manage invitations, and list joined rooms — all from the command line.
+manage invitations, manage devices, and list joined rooms — all from the command line.
 
 - **Source**: [GitHub](https://github.com/vroomfondel/minimatrix)
 - **PyPI**: [minimatrix](https://pypi.org/project/minimatrix/)
@@ -22,6 +22,7 @@ manage invitations, and list joined rooms — all from the command line.
 - **Listen** for incoming messages in real-time (prints to stdout)
 - **List** joined rooms with display names and member counts
 - **Manage invites** — list pending invitations and accept individually or auto-join on startup
+- **Device management** — list, purge orphaned devices, and import E2E keys from old crypto stores
 - **Session caching** — persists Matrix access tokens to avoid re-authentication on every run
 - **E2E encryption** via matrix-nio with persistent crypto store and device reuse
 - **TOFU device trust** — automatically trusts all devices in a room
@@ -49,6 +50,11 @@ minimatrix --user myuser --password mypass send --room '!abc:example.com' "Hello
 
 # Listen for messages
 minimatrix --user myuser --password mypass listen --room '!abc:example.com'
+
+# Manage devices
+minimatrix --user myuser --password mypass devices
+minimatrix --user myuser --password mypass devices purge
+minimatrix --user myuser --password mypass devices import-keys --delete-old-stores
 ```
 
 Or use a config file at `~/.config/minimatrix/config.yaml`:

@@ -9,7 +9,9 @@ from __future__ import annotations
 import glob
 import json
 import os
+import secrets
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -510,6 +512,154 @@ class MatrixClientHandler:
         """
         logger.info("Listening for commands ...")
         await self._client.sync_forever(timeout=timeout)
+
+    # -- Device management -----------------------------------------------------
+
+    @property
+    def device_id(self) -> str:
+        """Return the current device ID."""
+        return str(self._client.device_id)
+
+    async def list_devices(self) -> list[dict[str, Any]]:
+        """List all devices registered on the homeserver for the current user.
+
+        Returns:
+            A list of dicts with keys: device_id, display_name, last_seen_ip, last_seen_ts.
+        """
+        from nio.responses import DevicesResponse
+
+        resp = await self._client.devices()
+        if not isinstance(resp, DevicesResponse):
+            logger.error("Failed to list devices: {}", resp)
+            return []
+        result: list[dict[str, Any]] = []
+        for d in resp.devices:
+            result.append(
+                {
+                    "device_id": d.id,
+                    "display_name": d.display_name or "",
+                    "last_seen_ip": d.last_seen_ip or "",
+                    "last_seen_date": d.last_seen_date or "",
+                }
+            )
+        return result
+
+    async def delete_other_devices(self, password: str) -> int:
+        """Delete all devices except the current one using UIA password auth.
+
+        Args:
+            password: The user's Matrix password for the UIA flow.
+
+        Returns:
+            The number of devices deleted.
+        """
+        from nio.responses import DeleteDevicesAuthResponse, DeleteDevicesResponse
+
+        devices = await self.list_devices()
+        other_ids = [d["device_id"] for d in devices if d["device_id"] != self._client.device_id]
+        if not other_ids:
+            logger.info("No other devices to delete")
+            return 0
+
+        # First call without auth to get session ID
+        resp = await self._client.delete_devices(other_ids)
+        if isinstance(resp, DeleteDevicesAuthResponse):
+            # UIA required — retry with password auth
+            auth = {
+                "type": "m.login.password",
+                "identifier": {"type": "m.id.user", "user": self._client.user_id},
+                "password": password,
+                "session": resp.session,
+            }
+            resp = await self._client.delete_devices(other_ids, auth=auth)
+
+        if isinstance(resp, DeleteDevicesResponse):
+            logger.info("Deleted {} device(s)", len(other_ids))
+            return len(other_ids)
+
+        logger.error("Failed to delete devices: {}", resp)
+        return 0
+
+    async def import_keys_from_old_stores(self, delete_old: bool = False) -> tuple[int, int]:
+        """Import megolm sessions from old crypto store DBs into the current store.
+
+        Auto-generates a random passphrase for the export/import roundtrip.
+
+        Args:
+            delete_old: If True, delete old .db files (and associated sidecar files)
+                after successful import.
+
+        Returns:
+            A tuple of (sessions_imported, old_devices_count).
+        """
+        passphrase = secrets.token_urlsafe(32)
+        user = self._user
+        store_path = self._crypto_store_path
+        current_device = self._client.device_id
+
+        pattern = os.path.join(store_path, f"{user}_*.db")
+        all_dbs = glob.glob(pattern)
+
+        old_dbs = [db for db in all_dbs if not db.endswith(f"{user}_{current_device}.db")]
+        if not old_dbs:
+            logger.info("No old crypto store DBs found")
+            return (0, 0)
+
+        sessions_imported = 0
+        devices_processed = 0
+
+        for db_path in old_dbs:
+            # Extract device_id from filename: {user}_{device_id}.db
+            filename = os.path.basename(db_path)
+            # Remove the "{user}_" prefix and ".db" suffix
+            old_device_id = filename[len(f"{user}_") : -len(".db")]
+            if not old_device_id:
+                continue
+
+            logger.info("Exporting keys from old device {}", old_device_id)
+
+            nio_config = AsyncClientConfig(encryption_enabled=True, store_sync_tokens=True)
+            tmp_client = AsyncClient(
+                self._homeserver,
+                user,
+                device_id=old_device_id,
+                store_path=store_path,
+                config=nio_config,
+            )
+
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".keys", delete=False) as tf:
+                    export_path = tf.name
+
+                resp = await tmp_client.export_keys(export_path, passphrase)
+                if hasattr(resp, "keys_file") or os.path.getsize(export_path) > 0:
+                    import_resp = await self._client.import_keys(export_path, passphrase)
+                    if hasattr(import_resp, "keys"):
+                        count = len(import_resp.keys) if import_resp.keys else 0
+                    else:
+                        count = 0
+                    sessions_imported += count
+                    devices_processed += 1
+                    logger.info("Imported {} session(s) from device {}", count, old_device_id)
+                else:
+                    logger.warning("No keys exported from device {}", old_device_id)
+            except Exception as exc:
+                logger.warning("Failed to process old device {}: {}", old_device_id, exc)
+            finally:
+                await tmp_client.close()
+                if os.path.exists(export_path):
+                    os.unlink(export_path)
+
+        if delete_old and devices_processed > 0:
+            for db_path in old_dbs:
+                base = db_path[: -len(".db")]
+                for suffix in (".db", ".trusted_devices", ".blacklisted_devices", ".ignored_devices"):
+                    path = base + suffix
+                    if os.path.exists(path):
+                        os.unlink(path)
+                        logger.debug("Removed {}", path)
+
+        return (sessions_imported, devices_processed)
 
     # -- Cleanup ---------------------------------------------------------------
 

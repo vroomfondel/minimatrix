@@ -236,3 +236,50 @@ def test_resolve_config_yaml_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     cfg = resolve_config(ns)
     assert cfg["homeserver"] == "https://yaml.example.com"
     assert cfg["user"] == "yamlbot"
+
+
+# ---------------------------------------------------------------------------
+# devices subcommand
+# ---------------------------------------------------------------------------
+
+
+def test_build_parser_devices_list() -> None:
+    """Verifies that 'devices list' is parsed correctly."""
+    parser = build_parser()
+    args = parser.parse_args(["devices", "list"])
+    assert args.command == "devices"
+    assert args.devices_command == "list"
+
+
+def test_build_parser_devices_default() -> None:
+    """Verifies that 'devices' without subcommand defaults to devices_command=None."""
+    parser = build_parser()
+    args = parser.parse_args(["devices"])
+    assert args.command == "devices"
+    assert args.devices_command is None
+
+
+def test_build_parser_devices_purge() -> None:
+    """Verifies that 'devices purge' is parsed correctly."""
+    parser = build_parser()
+    args = parser.parse_args(["devices", "purge"])
+    assert args.command == "devices"
+    assert args.devices_command == "purge"
+
+
+def test_build_parser_devices_import_keys() -> None:
+    """Verifies that 'devices import-keys' is parsed correctly."""
+    parser = build_parser()
+    args = parser.parse_args(["devices", "import-keys"])
+    assert args.command == "devices"
+    assert args.devices_command == "import-keys"
+    assert args.delete_old_stores is False
+
+
+def test_build_parser_devices_import_keys_delete_old() -> None:
+    """Verifies that 'devices import-keys --delete-old-stores' sets the flag."""
+    parser = build_parser()
+    args = parser.parse_args(["devices", "import-keys", "--delete-old-stores"])
+    assert args.command == "devices"
+    assert args.devices_command == "import-keys"
+    assert args.delete_old_stores is True

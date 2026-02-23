@@ -279,6 +279,61 @@ async def cmd_invites_accept(cfg: dict[str, Any], room_id: str) -> None:
         await handler.close()
 
 
+async def cmd_devices_list(cfg: dict[str, Any]) -> None:
+    """List all devices registered on the homeserver.
+
+    Args:
+        cfg: Resolved configuration dict.
+    """
+    handler = await _create_handler(cfg)
+    try:
+        devices = await handler.list_devices()
+        if not devices:
+            print("No devices found.")
+            return
+        current = handler.device_id
+        for d in devices:
+            marker = " (this device)" if d["device_id"] == current else ""
+            print(
+                f"  {d['device_id']}{marker}  "
+                f"name={d['display_name']}  "
+                f"ip={d['last_seen_ip']}  "
+                f"last_seen={d['last_seen_date']}"
+            )
+    finally:
+        await handler.close()
+
+
+async def cmd_devices_purge(cfg: dict[str, Any]) -> None:
+    """Delete all devices except the current one.
+
+    Args:
+        cfg: Resolved configuration dict.
+    """
+    handler = await _create_handler(cfg)
+    try:
+        password = cfg.get("password", "")
+        deleted = await handler.delete_other_devices(password)
+        print(f"Deleted {deleted} device(s).")
+    finally:
+        await handler.close()
+
+
+async def cmd_devices_import_keys(cfg: dict[str, Any], delete_old: bool) -> None:
+    """Import megolm sessions from old crypto store DBs.
+
+    Args:
+        cfg: Resolved configuration dict.
+        delete_old: Whether to delete old store files after import.
+    """
+    handler = await _create_handler(cfg)
+    try:
+        sessions, devices = await handler.import_keys_from_old_stores(delete_old=delete_old)
+        print(f"Imported {sessions} session(s) from {devices} old device(s).")
+    finally:
+        await handler.close()
+
+
 async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
     """Send a text message to a room.
 
@@ -412,6 +467,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp_inv_accept = inv_sub.add_parser("accept", help="Accept a room invitation")
     sp_inv_accept.add_argument("--room", "-r", required=True, help="Room ID to accept (e.g. !abc:example.com)")
 
+    # --- devices ---
+    sp_devices = subparsers.add_parser("devices", help="Manage Matrix devices")
+    dev_sub = sp_devices.add_subparsers(dest="devices_command")
+    dev_sub.add_parser("list", help="List all registered devices (default)")
+    dev_sub.add_parser("purge", help="Delete all devices except the current one")
+    sp_dev_import = dev_sub.add_parser("import-keys", help="Import megolm sessions from old crypto store DBs")
+    sp_dev_import.add_argument(
+        "--delete-old-stores",
+        dest="delete_old_stores",
+        action="store_true",
+        default=False,
+        help="Delete old .db files after successful import",
+    )
+
     return parser
 
 
@@ -433,7 +502,7 @@ def main() -> None:
     Configures logging, parses arguments, resolves config, and dispatches
     to the appropriate subcommand coroutine in a new asyncio event loop.
     """
-    os.environ.setdefault("LOGURU_LEVEL", "INFO")
+    os.environ.setdefault("LOGURU_LEVEL", "DEBUG")
     configure_logging()
     glogger.enable("minimatrix")
 
@@ -466,6 +535,13 @@ def main() -> None:
             loop.run_until_complete(cmd_send(cfg, args.room, message))
         elif args.command == "listen":
             loop.run_until_complete(cmd_listen(cfg, args.room))
+        elif args.command == "devices":
+            if getattr(args, "devices_command", None) == "purge":
+                loop.run_until_complete(cmd_devices_purge(cfg))
+            elif getattr(args, "devices_command", None) == "import-keys":
+                loop.run_until_complete(cmd_devices_import_keys(cfg, args.delete_old_stores))
+            else:
+                loop.run_until_complete(cmd_devices_list(cfg))
     finally:
         loop.close()
 

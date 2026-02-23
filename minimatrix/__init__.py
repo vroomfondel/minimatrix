@@ -1,4 +1,4 @@
-__version__ = "0.0.6"
+__version__ = "0.0.7"
 
 import os
 import sys
@@ -45,7 +45,7 @@ def print_banner() -> None:
     table_str = tabulate(startup_rows, tablefmt="mixed_grid")
     lines = table_str.split("\n")
     table_width = len(lines[0])
-    title = "sipstuff starting up"
+    title = "minimatrix starting up"
     title_border = "\u250d" + "\u2501" * (table_width - 2) + "\u2511"
     title_row = "\u2502 " + title.center(table_width - 4) + " \u2502"
     separator = lines[0].replace("\u250d", "\u251d").replace("\u2511", "\u2525").replace("\u252f", "\u253f")

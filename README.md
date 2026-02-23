@@ -11,8 +11,7 @@
 # minimatrix
 
 Standalone Matrix CLI client with E2E encryption. Send messages, listen to rooms,
-manage invitations, and list joined rooms — all from the command line.
-
+manage invitations, manage devices, and list joined rooms — all from the command line.
 
 ## Features
 
@@ -21,6 +20,7 @@ manage invitations, and list joined rooms — all from the command line.
 - **List** joined rooms with display names and member counts
 - **Manage invites** — list pending invitations (with inviter, type, timestamp) and accept individually
 - **Auto-join** — optionally accept all pending room invitations on startup (`--auto-join`)
+- **Device management** — list registered devices, purge orphaned devices, and import E2E keys from old crypto stores
 - **Session caching** — persists Matrix access tokens to avoid re-authentication on every run
 - **E2E encryption** via matrix-nio with persistent crypto store and device reuse
 - **TOFU device trust** — automatically trusts all devices in a room
@@ -96,6 +96,21 @@ minimatrix listen --room '!abc123:example.com'
 # Press Ctrl+C to stop
 ```
 
+### 6. Manage devices
+
+```bash
+# List all registered devices
+minimatrix devices
+minimatrix devices list
+
+# Import E2E keys from old crypto store DBs
+minimatrix devices import-keys
+minimatrix devices import-keys --delete-old-stores
+
+# Purge all devices except the current one
+minimatrix devices purge
+```
+
 ## Configuration
 
 Configuration is resolved in this order (later overrides earlier):
@@ -125,6 +140,9 @@ Configuration is resolved in this order (later overrides earlier):
 | `invites accept --room ROOM_ID` | Accept a specific room invitation |
 | `send --room ROOM_ID [MESSAGE]` | Send a text message (reads from stdin if message omitted) |
 | `listen --room ROOM_ID` | Listen for messages and print to stdout |
+| `devices [list]` | List all devices registered on the homeserver |
+| `devices purge` | Delete all devices except the current one |
+| `devices import-keys [--delete-old-stores]` | Import megolm sessions from old crypto store DBs |
 
 Use `minimatrix --help` or `minimatrix <subcommand> --help` for full usage.
 
@@ -278,7 +296,6 @@ jwt_config:
 
 **"JWT signature validation failed":**
 - For JWKS: verify the endpoint URL is correct and accessible
-- 
 - For native JWT: ensure public key is correctly formatted with PEM headers
 - Check `issuer` matches the JWT `iss` claim
 
