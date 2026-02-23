@@ -633,12 +633,23 @@ class MatrixClientHandler:
                 config=nio_config,
             )
 
+            export_path: str | None = None
             try:
+                # Load the olm account from the old crypto store DB.
+                # restore_login() triggers load_store() which initializes the Olm
+                # object — required before export_keys() can access megolm sessions.
+                # The access_token is unused (no API calls are made).
+                tmp_client.restore_login(
+                    user_id=user,
+                    device_id=old_device_id,
+                    access_token="not-needed",
+                )
+
                 with tempfile.NamedTemporaryFile(suffix=".keys", delete=False) as tf:
                     export_path = tf.name
 
-                resp = await tmp_client.export_keys(export_path, passphrase)
-                if hasattr(resp, "keys_file") or os.path.getsize(export_path) > 0:
+                await tmp_client.export_keys(export_path, passphrase)
+                if os.path.getsize(export_path) > 0:
                     import_resp = await self._client.import_keys(export_path, passphrase)
                     if hasattr(import_resp, "keys"):
                         count = len(import_resp.keys) if import_resp.keys else 0
@@ -653,7 +664,7 @@ class MatrixClientHandler:
                 logger.warning("Failed to process old device {}: {}", old_device_id, exc)
             finally:
                 await tmp_client.close()
-                if os.path.exists(export_path):
+                if export_path and os.path.exists(export_path):
                     os.unlink(export_path)
 
         if delete_old and devices_processed > 0:
