@@ -21,7 +21,9 @@ and list joined rooms — all from the command line.
 - **Send** encrypted messages to Matrix rooms
 - **Listen** for incoming messages in real-time (prints to stdout)
 - **List** joined rooms with display names and member counts
-- **E2E encryption** via matrix-nio with persistent crypto store
+- **Manage invites** — list pending invitations and accept individually or auto-join on startup
+- **Session caching** — persists Matrix access tokens to avoid re-authentication on every run
+- **E2E encryption** via matrix-nio with persistent crypto store and device reuse
 - **TOFU device trust** — automatically trusts all devices in a room
 - **Multiple auth methods**: password, SSO, or JWT via Keycloak (ROPC + JWKS)
 - **Flexible config**: YAML file, environment variables, and CLI args (in ascending priority)
@@ -35,8 +37,12 @@ docker run --rm xomoxcc/minimatrix:latest
 ### Usage Examples
 
 ```bash
-# List joined rooms
+# List joined rooms and pending invites
 minimatrix --user myuser --password mypass --homeserver https://matrix.example.com rooms
+
+# List and accept invitations
+minimatrix --user myuser --password mypass invites
+minimatrix --user myuser --password mypass invites accept --room '!abc:example.com'
 
 # Send a message
 minimatrix --user myuser --password mypass send --room '!abc:example.com' "Hello!"
@@ -62,6 +68,7 @@ password: "mypassword"
 | `MATRIX_PASSWORD` | Matrix password (**required**) | — |
 | `CRYPTO_STORE_PATH` | Path for E2E encryption crypto store | `~/.local/share/minimatrix/crypto_store` |
 | `AUTH_METHOD` | Auth method (`password`, `sso`, or `jwt`) | `password` |
+| `AUTO_JOIN` | Auto-accept pending room invitations on startup | `false` |
 | `LOGURU_LEVEL` | Log verbosity (`DEBUG`, `INFO`, `WARNING`, ...) | `DEBUG` |
 
 ### JWT Authentication (Keycloak)

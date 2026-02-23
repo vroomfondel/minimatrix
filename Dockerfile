@@ -34,6 +34,8 @@ ENV PATH="/home/${UNAME}/.local/bin:$PATH"
 
 WORKDIR /app
 
+COPY --chown=${UID}:${GID} runcli.sh ./
+
 COPY --chown=${UID}:${GID} requirements.txt ./
 COPY --chown=${UID}:${GID} README.md pyproject.toml ./
 COPY --chown=${UID}:${GID} minimatrix ./minimatrix

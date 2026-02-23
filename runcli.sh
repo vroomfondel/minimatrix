@@ -33,12 +33,12 @@ echo "User:       $MATRIX_USER"
 echo "Auth:       $AUTH_METHOD"
 echo ""
 
-python -m minimatrix.cli invites
+# python -m minimatrix.cli invites
 
 ## Test 1: List rooms
 #echo "--- Listing rooms ---"
 #python -m minimatrix.cli rooms
-#python -m minimatrix.cli --auto-join rooms
+python -m minimatrix.cli --auto-join rooms
 
 # Test 2: Send a test message
 if [ -n "$ROOM_ID" ]; then

@@ -7,9 +7,11 @@ Provides a clean interface for Matrix/Synapse interactions including authenticat
 from __future__ import annotations
 
 import glob
+import json
 import os
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from loguru import logger as glogger
@@ -108,6 +110,62 @@ class MatrixClientHandler:
         """Return the dict of rooms with pending invites."""
         return dict(self._client.invited_rooms)
 
+    # -- Token cache -----------------------------------------------------------
+
+    @property
+    def _token_cache_path(self) -> Path:
+        """Path to the cached Matrix session token file."""
+        return Path(self._crypto_store_path) / "session.json"
+
+    def _save_token(self) -> None:
+        """Persist the current Matrix session to disk."""
+        data = {
+            "user_id": self._client.user_id,
+            "device_id": self._client.device_id,
+            "access_token": self._client.access_token,
+        }
+        self._token_cache_path.write_text(json.dumps(data))
+        logger.debug("Session token cached to {}", self._token_cache_path)
+
+    def _load_cached_token(self) -> dict[str, str] | None:
+        """Load a cached Matrix session from disk, or return None."""
+        path = self._token_cache_path
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text())
+            if data.get("user_id") and data.get("device_id") and data.get("access_token"):
+                return dict(data)
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Could not read cached token from {}: {}", path, exc)
+        return None
+
+    async def _try_restore_login(self) -> bool:
+        """Attempt to restore a previous session from the token cache.
+
+        Returns True if the cached token is still valid, False otherwise.
+        """
+        cached = self._load_cached_token()
+        if not cached:
+            return False
+
+        logger.info("Restoring session from cache (device_id={})", cached["device_id"])
+        self._client.restore_login(
+            user_id=cached["user_id"],
+            device_id=cached["device_id"],
+            access_token=cached["access_token"],
+        )
+
+        # Verify the token is still valid with a whoami call
+        resp = await self._client.whoami()
+        if hasattr(resp, "user_id"):
+            logger.info("Cached session valid for {}", resp.user_id)
+            return True
+
+        logger.info("Cached session expired, performing fresh login")
+        self._token_cache_path.unlink(missing_ok=True)
+        return False
+
     # -- Login methods ---------------------------------------------------------
 
     async def login(
@@ -142,6 +200,10 @@ class MatrixClientHandler:
         jwt_login_type
             Matrix login type for JWT auth (default: "com.famedly.login.token.oauth").
         """
+        # Try restoring a cached session first
+        if await self._try_restore_login():
+            return
+
         login_info = f"method={auth_method}"
         if auth_method == "jwt":
             login_info += f", login_type={jwt_login_type}"
@@ -171,6 +233,8 @@ class MatrixClientHandler:
         else:
             logger.error("Login failed: {}", resp)
             sys.exit(1)
+
+        self._save_token()
 
         if self._client.should_upload_keys:
             logger.info("Uploading device keys ...")
@@ -281,7 +345,14 @@ class MatrixClientHandler:
 
     async def join_room(self, room_id: str) -> None:
         """Join a Matrix room."""
-        await self._client.join(room_id)
+        from nio import JoinResponse
+
+        resp = await self._client.join(room_id)
+        if isinstance(resp, JoinResponse):
+            logger.info("Joined room {}", room_id)
+        else:
+            logger.error("Failed to join room {}: {}", room_id, resp)
+            raise RuntimeError(f"Failed to join room {room_id}: {resp}")
 
     # -- Callback registration -------------------------------------------------
 
@@ -327,7 +398,11 @@ class MatrixClientHandler:
             if auto_join:
                 logger.info("Auto-join enabled — accepting pending invitations")
                 await self._auto_join_invited_rooms()
-            return str(sync_resp.next_batch)
+                # Re-sync to update room state after joining
+                resync = await self._client.sync(timeout=timeout)
+                if isinstance(resync, SyncResponse):
+                    self._client.next_batch = resync.next_batch
+            return str(self._client.next_batch)
         return None
 
     def _extract_invite_metadata(self, sync_resp: SyncResponse) -> None:
@@ -353,7 +428,11 @@ class MatrixClientHandler:
         """Automatically accept all pending room invitations."""
         from datetime import datetime, timezone
 
+        joined_room_ids = set(self._client.rooms.keys())
         for room_id, room in list(self._client.invited_rooms.items()):
+            if room_id in joined_room_ids:
+                logger.debug("Skipping {} — already joined", room_id)
+                continue
             inviter = getattr(room, "inviter", None) or "unknown"
             meta = self.get_invite_metadata(room_id)
             is_dm = meta["is_dm"]
@@ -372,7 +451,7 @@ class MatrixClientHandler:
                 ts_str,
             )
             try:
-                await self._client.join(room_id)
+                await self.join_room(room_id)
             except Exception as exc:
                 logger.warning("Failed to auto-join {}: {}", room_id, exc)
 

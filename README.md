@@ -23,7 +23,10 @@ and basic room operations are implemented.
 - **Send** encrypted messages to Matrix rooms
 - **Listen** for incoming messages in real-time (prints to stdout)
 - **List** joined rooms with display names and member counts
-- **E2E encryption** via matrix-nio with persistent crypto store
+- **Manage invites** — list pending invitations (with inviter, type, timestamp) and accept individually
+- **Auto-join** — optionally accept all pending room invitations on startup (`--auto-join`)
+- **Session caching** — persists Matrix access tokens to avoid re-authentication on every run
+- **E2E encryption** via matrix-nio with persistent crypto store and device reuse
 - **TOFU device trust** — automatically trusts all devices in a room
 - **Multiple auth methods**: password, SSO, or JWT via Keycloak (ROPC + JWKS)
 - **Flexible config**: YAML file, environment variables, and CLI args (in ascending priority)
@@ -64,13 +67,24 @@ user: "myuser"
 password: "mypassword"
 ```
 
-### 2. List joined rooms
+### 2. List joined rooms and pending invites
 
 ```bash
 minimatrix rooms
 ```
 
-### 3. Send a message
+### 3. Manage invitations
+
+```bash
+# List pending invites
+minimatrix invites
+minimatrix invites list
+
+# Accept a specific invite
+minimatrix invites accept --room '!abc123:example.com'
+```
+
+### 4. Send a message
 
 ```bash
 minimatrix send --room '!abc123:example.com' "Hello from minimatrix!"
@@ -79,7 +93,7 @@ minimatrix send --room '!abc123:example.com' "Hello from minimatrix!"
 echo "Hello from a pipe" | minimatrix send --room '!abc123:example.com'
 ```
 
-### 4. Listen for messages
+### 5. Listen for messages
 
 ```bash
 minimatrix listen --room '!abc123:example.com'
@@ -104,13 +118,16 @@ Configuration is resolved in this order (later overrides earlier):
 | `MATRIX_PASSWORD` / `password` | `--password` | — (**required**) |
 | `CRYPTO_STORE_PATH` / `crypto_store_path` | `--crypto-store-path` | `~/.local/share/minimatrix/crypto_store` |
 | `AUTH_METHOD` / `auth_method` | `--auth-method` | `password` |
+| `AUTO_JOIN` / `auto_join` | `--auto-join` | `false` |
 | `LOGURU_LEVEL` | — | `DEBUG` |
 
 ### CLI Subcommands
 
 | Subcommand | Description |
 |---|---|
-| `rooms` | List joined rooms with display name and member count |
+| `rooms` | List joined rooms and pending invites |
+| `invites [list]` | List pending room invitations (with inviter, DM/Room type, timestamp) |
+| `invites accept --room ROOM_ID` | Accept a specific room invitation |
 | `send --room ROOM_ID [MESSAGE]` | Send a text message (reads from stdin if message omitted) |
 | `listen --room ROOM_ID` | Listen for messages and print to stdout |
 
