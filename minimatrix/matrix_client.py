@@ -32,14 +32,10 @@ class MatrixClientHandler:
     def __init__(self, homeserver: str, user: str, crypto_store_path: str) -> None:
         """Create a Matrix client with E2E encryption support.
 
-        Parameters
-        ----------
-        homeserver
-            Matrix homeserver URL.
-        user
-            Matrix username (localpart).
-        crypto_store_path
-            Path for persistent E2E key storage.
+        Args:
+            homeserver: Matrix homeserver URL.
+            user: Matrix username (localpart).
+            crypto_store_path: Path for persistent E2E key storage.
         """
         self._homeserver = homeserver
         self._user = user
@@ -71,7 +67,16 @@ class MatrixClientHandler:
 
     @staticmethod
     def _recover_device_id(store_path: str, user: str) -> str | None:
-        """Recover device_id from an existing nio crypto store SQLite DB."""
+        """Recover device_id from an existing nio crypto store SQLite DB.
+
+        Args:
+            store_path: Directory containing the crypto store ``*.db`` files.
+            user: Full Matrix user ID used to locate the matching database file.
+
+        Returns:
+            The device ID string if found in the database, or None if no matching
+            store exists or the query fails.
+        """
         import sqlite3
 
         pattern = os.path.join(store_path, f"{user}_*.db")
@@ -128,7 +133,12 @@ class MatrixClientHandler:
         logger.debug("Session token cached to {}", self._token_cache_path)
 
     def _load_cached_token(self) -> dict[str, str] | None:
-        """Load a cached Matrix session from disk, or return None."""
+        """Load a cached Matrix session from disk.
+
+        Returns:
+            A dict with ``user_id``, ``device_id``, and ``access_token`` keys if a
+            valid cache file exists, or None if the file is absent or unreadable.
+        """
         path = self._token_cache_path
         if not path.is_file():
             return None
@@ -143,7 +153,8 @@ class MatrixClientHandler:
     async def _try_restore_login(self) -> bool:
         """Attempt to restore a previous session from the token cache.
 
-        Returns True if the cached token is still valid, False otherwise.
+        Returns:
+            True if the cached token is still valid, False otherwise.
         """
         cached = self._load_cached_token()
         if not cached:
@@ -181,24 +192,17 @@ class MatrixClientHandler:
     ) -> None:
         """Log in to the Matrix homeserver and upload device keys.
 
-        Parameters
-        ----------
-        auth_method
-            One of "password", "sso", or "jwt".
-        password
-            Matrix password (also used for Keycloak ROPC in jwt/sso modes).
-        sso_idp_id
-            SSO IdP identifier (required for auth_method="sso").
-        keycloak_url
-            Keycloak base URL (required for auth_method="jwt").
-        keycloak_realm
-            Keycloak realm name (required for auth_method="jwt").
-        keycloak_client_id
-            Keycloak client ID (required for auth_method="jwt").
-        keycloak_client_secret
-            Keycloak client secret (optional, empty for public clients).
-        jwt_login_type
-            Matrix login type for JWT auth (default: "com.famedly.login.token.oauth").
+        Args:
+            auth_method: One of ``"password"``, ``"sso"``, or ``"jwt"``.
+            password: Matrix password (also used for Keycloak ROPC in jwt/sso modes).
+            sso_idp_id: SSO IdP identifier (required for ``auth_method="sso"``).
+            keycloak_url: Keycloak base URL (required for ``auth_method="jwt"``).
+            keycloak_realm: Keycloak realm name (required for ``auth_method="jwt"``).
+            keycloak_client_id: Keycloak client ID (required for ``auth_method="jwt"``).
+            keycloak_client_secret: Keycloak client secret (optional, empty for public
+                clients).
+            jwt_login_type: Matrix login type for JWT auth (default:
+                ``"com.famedly.login.token.oauth"``).
         """
         # Try restoring a cached session first
         if await self._try_restore_login():
@@ -241,7 +245,15 @@ class MatrixClientHandler:
             await self._client.keys_upload()
 
     async def _login_sso(self, idp_id: str, password: str) -> LoginResponse:
-        """Perform SSO login via Keycloak and return the LoginResponse."""
+        """Perform SSO login via Keycloak.
+
+        Args:
+            idp_id: The SSO identity provider identifier registered on the homeserver.
+            password: The user's password passed to the Keycloak HTML login form.
+
+        Returns:
+            A :class:`~nio.LoginResponse` on success. Exits the process on failure.
+        """
         from minimatrix.sso_login import SSOLoginError, SSOLoginHandler
 
         handler = SSOLoginHandler(
@@ -265,7 +277,19 @@ class MatrixClientHandler:
         keycloak_client_secret: str,
         jwt_login_type: str,
     ) -> LoginResponse:
-        """Perform JWT login via Keycloak ROPC grant and return the LoginResponse."""
+        """Perform JWT login via Keycloak ROPC grant.
+
+        Args:
+            password: The user's password used for the Keycloak ROPC token request.
+            keycloak_url: Keycloak base URL.
+            keycloak_realm: Keycloak realm name.
+            keycloak_client_id: Keycloak client ID.
+            keycloak_client_secret: Keycloak client secret (empty for public clients).
+            jwt_login_type: Matrix login type string for the JWT auth flow.
+
+        Returns:
+            A :class:`~nio.LoginResponse` on success. Exits the process on failure.
+        """
         from minimatrix.jwt_login import JWTLoginError, JWTLoginHandler
 
         handler = JWTLoginHandler(
@@ -286,7 +310,11 @@ class MatrixClientHandler:
     # -- E2E Device Trust (TOFU) -----------------------------------------------
 
     async def trust_devices_for_user(self, user_id: str) -> None:
-        """Auto-trust all devices of a given user (TOFU)."""
+        """Auto-trust all devices of a given user (TOFU).
+
+        Args:
+            user_id: The fully-qualified Matrix user ID whose devices to trust.
+        """
         if self._client.olm:
             self._client.olm.users_for_key_query.add(user_id)
         try:
@@ -302,12 +330,21 @@ class MatrixClientHandler:
                 self._client.verify_device(olm_device)
 
     async def trust_all_allowed_devices(self, allowed_users: Sequence[str]) -> None:
-        """Trust devices of all allowed users."""
+        """Trust devices of all allowed users.
+
+        Args:
+            allowed_users: Sequence of fully-qualified Matrix user IDs whose devices
+                should be trusted.
+        """
         for user_id in allowed_users:
             await self.trust_devices_for_user(user_id)
 
     async def trust_devices_in_room(self, room_id: str) -> None:
-        """Trust all devices of all members in a room (TOFU)."""
+        """Trust all devices of all members in a room (TOFU).
+
+        Args:
+            room_id: The Matrix room ID whose members' devices should be trusted.
+        """
         room = self._client.rooms.get(room_id)
         if not room:
             return
@@ -321,17 +358,13 @@ class MatrixClientHandler:
     async def send_message(self, room_id: str, text: str) -> None:
         """Send a text message to a room with E2E encryption.
 
-        Parameters
-        ----------
-        room_id
-            The Matrix room ID to send to.
-        text
-            The message body.
+        Args:
+            room_id: The Matrix room ID to send to.
+            text: The message body.
 
-        Note
-        ----
-        Uses ``ignore_unverified_devices=True`` as a safety net against race
-        conditions where a device appears between the trust loop and the send.
+        Note:
+            Uses ``ignore_unverified_devices=True`` as a safety net against race
+            conditions where a device appears between the trust loop and the send.
         """
         try:
             await self._client.room_send(
@@ -344,7 +377,14 @@ class MatrixClientHandler:
             logger.error("Failed to send message to {}: {}", room_id, exc)
 
     async def join_room(self, room_id: str) -> None:
-        """Join a Matrix room."""
+        """Join a Matrix room.
+
+        Args:
+            room_id: The Matrix room ID to join.
+
+        Raises:
+            RuntimeError: If the homeserver returns an error response.
+        """
         from nio import JoinResponse
 
         resp = await self._client.join(room_id)
@@ -359,12 +399,9 @@ class MatrixClientHandler:
     def add_event_callback(self, callback: Callable[..., Any], event_type: type) -> None:
         """Register an event callback with the Matrix client.
 
-        Parameters
-        ----------
-        callback
-            Async function to call when the event is received.
-        event_type
-            The nio event type class to listen for.
+        Args:
+            callback: Async function to call when the event is received.
+            event_type: The nio event type class to listen for.
         """
         self._client.add_event_callback(callback, event_type)
 
@@ -373,17 +410,13 @@ class MatrixClientHandler:
     async def initial_sync(self, timeout: int = 10000, auto_join: bool = False) -> str | None:
         """Perform an initial sync and return the next_batch token.
 
-        Parameters
-        ----------
-        timeout
-            Sync timeout in milliseconds.
-        auto_join
-            Automatically accept all pending room invitations.
+        Args:
+            timeout: Sync timeout in milliseconds.
+            auto_join: Automatically accept all pending room invitations.
 
-        Returns
-        -------
-        str | None
-            The next_batch token if sync succeeded, None otherwise.
+        Returns:
+            The next_batch token if sync succeeded, or None if the sync response
+            was not a :class:`~nio.SyncResponse`.
         """
         # Force a full sync to pick up pending invites and current room state,
         # regardless of any stored next_batch token from a previous session.
@@ -406,7 +439,12 @@ class MatrixClientHandler:
         return None
 
     def _extract_invite_metadata(self, sync_resp: SyncResponse) -> None:
-        """Extract invite timestamps and is_direct from the raw SyncResponse."""
+        """Extract invite timestamps and is_direct from the raw SyncResponse.
+
+        Args:
+            sync_resp: The :class:`~nio.SyncResponse` returned by the initial sync,
+                used to populate ``_invite_metadata`` for all invited rooms.
+        """
         from nio.events.invite_events import InviteMemberEvent
 
         for room_id, invite_info in sync_resp.rooms.invite.items():
@@ -421,7 +459,16 @@ class MatrixClientHandler:
             self._invite_metadata[room_id] = meta
 
     def get_invite_metadata(self, room_id: str) -> dict[str, Any]:
-        """Return invite metadata (is_dm, invite_ts) for a room."""
+        """Return invite metadata for a room.
+
+        Args:
+            room_id: The Matrix room ID to look up.
+
+        Returns:
+            A dict with keys ``"is_dm"`` (bool) and ``"invite_ts"`` (int or None).
+            Defaults to ``{"is_dm": False, "invite_ts": None}`` if the room is not
+            found in the metadata cache.
+        """
         return self._invite_metadata.get(room_id, {"is_dm": False, "invite_ts": None})
 
     async def _auto_join_invited_rooms(self) -> None:
@@ -458,10 +505,8 @@ class MatrixClientHandler:
     async def sync_forever(self, timeout: int = 30000) -> None:
         """Run the sync loop indefinitely.
 
-        Parameters
-        ----------
-        timeout
-            Sync timeout in milliseconds.
+        Args:
+            timeout: Sync timeout in milliseconds.
         """
         logger.info("Listening for commands ...")
         await self._client.sync_forever(timeout=timeout)

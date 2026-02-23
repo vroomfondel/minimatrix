@@ -7,7 +7,15 @@ from dataclasses import dataclass
 
 
 def _parse_bool(value: str) -> bool:
-    """Parse a string into a boolean (truthy: ``"true"``, ``"1"``, ``"yes"``)."""
+    """Parse a string into a boolean.
+
+    Args:
+        value: The string to evaluate. Truthy values are ``"true"``, ``"1"``,
+            and ``"yes"`` (case-insensitive).
+
+    Returns:
+        True if value is a recognised truthy string, False otherwise.
+    """
     return value.strip().lower() in ("true", "1", "yes")
 
 
@@ -34,22 +42,30 @@ class MiniMatrixConfig:
     def from_env(cls) -> MiniMatrixConfig:
         """Build a :class:`MiniMatrixConfig` from environment variables.
 
-        Environment variables
-        ---------------------
-        MATRIX_HOMESERVER : str, optional
-            Matrix homeserver URL (default ``"https://matrix.org"``).
-        MATRIX_USER : str, **required**
-            Matrix username (localpart, e.g. ``"myuser"``).
-        MATRIX_PASSWORD : str, **required**
-            Matrix password.
-        CRYPTO_STORE_PATH : str, optional
-            Path for persistent E2E key storage
-            (default ``"~/.local/share/minimatrix/crypto_store"``).
+        Reads the following environment variables:
 
-        Raises
-        ------
-        ValueError
-            If ``MATRIX_USER`` or ``MATRIX_PASSWORD`` is missing or empty.
+        - ``MATRIX_HOMESERVER`` (optional): Matrix homeserver URL
+          (default ``"https://matrix.org"``).
+        - ``MATRIX_USER`` (required): Matrix username localpart, e.g. ``"myuser"``.
+        - ``MATRIX_PASSWORD`` (required): Matrix password.
+        - ``CRYPTO_STORE_PATH`` (optional): Path for persistent E2E key storage
+          (default ``"~/.local/share/minimatrix/crypto_store"``).
+        - ``AUTH_METHOD`` (optional): One of ``"password"``, ``"sso"``, or ``"jwt"``
+          (default ``"password"``).
+        - ``SSO_IDP_ID`` (optional): SSO IdP identifier (default ``"keycloak"``).
+        - ``KEYCLOAK_URL`` (required when ``AUTH_METHOD=jwt``): Keycloak base URL.
+        - ``KEYCLOAK_REALM`` (required when ``AUTH_METHOD=jwt``): Keycloak realm name.
+        - ``KEYCLOAK_CLIENT_ID`` (required when ``AUTH_METHOD=jwt``): Keycloak client ID.
+        - ``KEYCLOAK_CLIENT_SECRET`` (optional): Keycloak client secret.
+        - ``JWT_LOGIN_TYPE`` (optional): Matrix login type for JWT auth
+          (default ``"com.famedly.login.token.oauth"``).
+
+        Returns:
+            A fully populated :class:`MiniMatrixConfig` instance.
+
+        Raises:
+            ValueError: If a required environment variable is missing, empty, or
+                contains an invalid value.
         """
         matrix_user = os.environ.get("MATRIX_USER", "").strip()
         if not matrix_user:

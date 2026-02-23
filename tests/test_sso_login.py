@@ -17,16 +17,19 @@ from minimatrix.sso_login import (
 
 
 def test_extract_login_token_present() -> None:
+    """Verifies that the loginToken query parameter is correctly extracted from a callback URL."""
     url = "https://matrix.example.com/_synapse/client/oidc/callback?loginToken=abc123xyz"
     assert _extract_login_token(url) == "abc123xyz"
 
 
 def test_extract_login_token_missing() -> None:
+    """Verifies that None is returned when the URL contains no loginToken parameter."""
     url = "https://matrix.example.com/_synapse/client/oidc/callback?other=value"
     assert _extract_login_token(url) is None
 
 
 def test_extract_login_token_empty_url() -> None:
+    """Verifies that None is returned when the URL has no query string at all."""
     assert _extract_login_token("https://example.com") is None
 
 
@@ -96,20 +99,24 @@ def test_parse_keycloak_form_reversed_hidden_field_attrs() -> None:
 
 
 def test_extract_error_message_kc_feedback() -> None:
+    """Verifies that the error text is extracted from a Keycloak kc-feedback-text span."""
     html = '<span class="kc-feedback-text">Invalid username or password.</span>'
     assert _extract_error_message(html) == "Invalid username or password."
 
 
 def test_extract_error_message_alert() -> None:
+    """Verifies that the error text is extracted from an alert-error div."""
     html = '<div class="alert alert-error">Account disabled</div>'
     assert _extract_error_message(html) == "Account disabled"
 
 
 def test_extract_error_message_access_denied() -> None:
+    """Verifies that an 'Access Denied' body is detected and reported appropriately."""
     html = "<html><body>Access Denied - you do not have the role</body></html>"
     assert "Access denied" in _extract_error_message(html)
 
 
 def test_extract_error_message_fallback() -> None:
+    """Verifies that a generic error page falls back to the 'Authentication failed' message."""
     html = "<html><body>Something went wrong</body></html>"
     assert _extract_error_message(html) == "Authentication failed"

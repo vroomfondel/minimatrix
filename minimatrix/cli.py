@@ -50,7 +50,14 @@ logger = glogger.bind(classname="matrix_cli")
 
 
 def _load_yaml_config(path: Path) -> dict[str, Any]:
-    """Load config from YAML file, return empty dict if missing or unreadable."""
+    """Load config from a YAML file, return empty dict if missing or unreadable.
+
+    Args:
+        path: Path to the YAML configuration file.
+
+    Returns:
+        A dict of configuration key-value pairs, or an empty dict on failure.
+    """
     if not path.is_file():
         return {}
     try:
@@ -65,7 +72,14 @@ def _load_yaml_config(path: Path) -> dict[str, Any]:
 
 
 def _merge_env(cfg: dict[str, Any]) -> dict[str, Any]:
-    """Override config values with environment variables where set."""
+    """Override config values with environment variables where set.
+
+    Args:
+        cfg: Mutable configuration dict to update in place.
+
+    Returns:
+        The same configuration dict with environment variable overrides applied.
+    """
     for key, env_var in _ENV_MAP.items():
         val = os.environ.get(env_var)
         if val is not None:
@@ -74,7 +88,15 @@ def _merge_env(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _merge_cli(cfg: dict[str, Any], ns: argparse.Namespace) -> dict[str, Any]:
-    """Override config values with explicitly provided CLI args."""
+    """Override config values with explicitly provided CLI args.
+
+    Args:
+        cfg: Mutable configuration dict to update in place.
+        ns: Parsed argparse namespace containing CLI argument values.
+
+    Returns:
+        The same configuration dict with CLI argument overrides applied.
+    """
     for key in _ENV_MAP:
         cli_val = getattr(ns, key, None)
         if cli_val is not None:
@@ -83,7 +105,18 @@ def _merge_cli(cfg: dict[str, Any], ns: argparse.Namespace) -> dict[str, Any]:
 
 
 def resolve_config(ns: argparse.Namespace) -> dict[str, Any]:
-    """Build final config dict: YAML < env < CLI."""
+    """Build the final config dict by merging YAML, environment, and CLI args.
+
+    Resolution order (lowest to highest priority): YAML file, environment
+    variables, CLI arguments. Applies defaults for missing keys and
+    normalizes ``auto_join`` to bool.
+
+    Args:
+        ns: Parsed argparse namespace from ``build_parser()``.
+
+    Returns:
+        A fully resolved configuration dict ready for use by subcommand handlers.
+    """
     config_file = Path(getattr(ns, "config", None) or DEFAULT_CONFIG_FILE).expanduser()
     cfg = _load_yaml_config(config_file)
     cfg = _merge_env(cfg)
@@ -117,7 +150,14 @@ def resolve_config(ns: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _create_handler(cfg: dict[str, Any]) -> MatrixClientHandler:
-    """Create a MatrixClientHandler, login, and run initial sync."""
+    """Create a MatrixClientHandler, login, and run initial sync.
+
+    Args:
+        cfg: Resolved configuration dict containing connection and auth settings.
+
+    Returns:
+        An authenticated and initially synced MatrixClientHandler instance.
+    """
     user = cfg.get("user", "")
     password = cfg.get("password", "")
     if not user or not password:
@@ -148,7 +188,16 @@ async def _create_handler(cfg: dict[str, Any]) -> MatrixClientHandler:
 
 
 def _format_invite(room_id: str, room: Any, handler: MatrixClientHandler) -> str:
-    """Format a single invited room for display."""
+    """Format a single invited room for display.
+
+    Args:
+        room_id: The Matrix room ID string.
+        room: The nio invited room object.
+        handler: The MatrixClientHandler used to retrieve invite metadata.
+
+    Returns:
+        A formatted single-line string describing the invitation.
+    """
     from datetime import datetime, timezone
 
     display_name = getattr(room, "display_name", room_id) or room_id
@@ -162,7 +211,11 @@ def _format_invite(room_id: str, room: Any, handler: MatrixClientHandler) -> str
 
 
 async def cmd_rooms(cfg: dict[str, Any]) -> None:
-    """List joined rooms and pending invites."""
+    """List joined rooms and pending invites.
+
+    Args:
+        cfg: Resolved configuration dict.
+    """
     handler = await _create_handler(cfg)
     try:
         rooms = handler.rooms
@@ -185,7 +238,11 @@ async def cmd_rooms(cfg: dict[str, Any]) -> None:
 
 
 async def cmd_invites_list(cfg: dict[str, Any]) -> None:
-    """List pending room invitations."""
+    """List pending room invitations.
+
+    Args:
+        cfg: Resolved configuration dict.
+    """
     handler = await _create_handler(cfg)
     try:
         invited = handler.invited_rooms
@@ -199,7 +256,12 @@ async def cmd_invites_list(cfg: dict[str, Any]) -> None:
 
 
 async def cmd_invites_accept(cfg: dict[str, Any], room_id: str) -> None:
-    """Accept a single room invitation."""
+    """Accept a single room invitation.
+
+    Args:
+        cfg: Resolved configuration dict.
+        room_id: The Matrix room ID of the invitation to accept.
+    """
     handler = await _create_handler(cfg)
     try:
         invited = handler.invited_rooms
@@ -218,7 +280,13 @@ async def cmd_invites_accept(cfg: dict[str, Any], room_id: str) -> None:
 
 
 async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
-    """Send a text message to a room."""
+    """Send a text message to a room.
+
+    Args:
+        cfg: Resolved configuration dict.
+        room_id: The Matrix room ID to send the message to.
+        message: The plain-text message body.
+    """
     handler = await _create_handler(cfg)
     try:
         await handler.trust_devices_in_room(room_id)
@@ -229,13 +297,27 @@ async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
 
 
 async def cmd_listen(cfg: dict[str, Any], room_id: str) -> None:
-    """Listen for messages in a room and print them to stdout."""
+    """Listen for messages in a room and print them to stdout.
+
+    Registers callbacks for plaintext and undecryptable encrypted messages,
+    then runs a continuous sync loop until cancelled.
+
+    Args:
+        cfg: Resolved configuration dict.
+        room_id: The Matrix room ID to listen in.
+    """
     from nio import MegolmEvent, RoomMessageText
 
     handler = await _create_handler(cfg)
     own_user_id = handler.user_id
 
     async def _on_message(room: Any, event: RoomMessageText) -> None:
+        """Print an incoming plaintext message to stdout, skipping own messages.
+
+        Args:
+            room: The nio room object the event was received in.
+            event: The incoming RoomMessageText event.
+        """
         if event.sender == own_user_id:
             return
         ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
@@ -243,6 +325,12 @@ async def cmd_listen(cfg: dict[str, Any], room_id: str) -> None:
         print(f"[{ts_str}] <{event.sender}> {event.body}", flush=True)
 
     async def _on_megolm(room: Any, event: MegolmEvent) -> None:
+        """Print a placeholder for an undecryptable encrypted message.
+
+        Args:
+            room: The nio room object the event was received in.
+            event: The MegolmEvent that could not be decrypted.
+        """
         ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{ts_str}] <{event.sender}> [encrypted, unable to decrypt]", flush=True)
@@ -267,7 +355,12 @@ async def cmd_listen(cfg: dict[str, Any], room_id: str) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI argument parser."""
+    """Build the CLI argument parser.
+
+    Returns:
+        A configured argparse.ArgumentParser instance with all subcommands
+        and arguments registered.
+    """
     parser = argparse.ArgumentParser(
         prog="minimatrix",
         description="minimatrix — standalone Matrix CLI client: send, listen, list rooms.",
@@ -328,12 +421,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _handle_signal() -> None:
+    """Handle a shutdown signal by cancelling all running asyncio tasks."""
     logger.info("Received shutdown signal")
     for task in asyncio.all_tasks():
         task.cancel()
 
 
 def main() -> None:
+    """Entry point for the minimatrix CLI.
+
+    Configures logging, parses arguments, resolves config, and dispatches
+    to the appropriate subcommand coroutine in a new asyncio event loop.
+    """
     os.environ.setdefault("LOGURU_LEVEL", "INFO")
     configure_logging()
     glogger.enable("minimatrix")

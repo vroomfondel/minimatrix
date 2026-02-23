@@ -46,6 +46,18 @@ class JWTLoginHandler:
         password: str,
         login_type: str = "com.famedly.login.token.oauth",
     ) -> None:
+        """Initialize the JWT login handler.
+
+        Args:
+            keycloak_url: Base URL of the Keycloak server.
+            realm: Keycloak realm name.
+            client_id: OAuth2 client ID registered in Keycloak.
+            client_secret: OAuth2 client secret (empty string if not required).
+            username: Matrix/Keycloak username.
+            password: User password for ROPC grant.
+            login_type: Matrix login type identifier. Defaults to
+                ``com.famedly.login.token.oauth``.
+        """
         self.keycloak_url = keycloak_url.rstrip("/")
         self.realm = realm
         self.client_id = client_id
@@ -57,14 +69,13 @@ class JWTLoginHandler:
     async def obtain_jwt_token(self) -> str:
         """POST to Keycloak ROPC endpoint and return the ``access_token`` JWT.
 
-        Raises
-        ------
-        JWTAuthError
-            On authentication failure (401, 400).
-        JWTNetworkError
-            On network-level failure.
-        JWTLoginError
-            On unexpected responses.
+        Returns:
+            The raw JWT access token string from Keycloak.
+
+        Raises:
+            JWTAuthError: On authentication failure (401, 400).
+            JWTNetworkError: On network-level failure.
+            JWTLoginError: On unexpected responses.
         """
         token_url = f"{self.keycloak_url}/realms/{self.realm}/protocol/openid-connect/token"
         data: dict[str, str] = {
@@ -109,17 +120,16 @@ class JWTLoginHandler:
     async def perform_login(self, client: AsyncClient, device_id: str | None = None) -> LoginResponse:
         """Obtain a JWT token and authenticate the Matrix client.
 
-        Returns
-        -------
-        LoginResponse
+        Args:
+            client: The nio AsyncClient instance to authenticate.
+            device_id: Optional device ID to reuse across sessions.
+
+        Returns:
             The successful login response from the Matrix client.
 
-        Raises
-        ------
-        JWTLoginError
-            On any failure during the JWT flow.
-        JWTAuthError
-            On authentication failure.
+        Raises:
+            JWTLoginError: On any failure during the JWT flow.
+            JWTAuthError: On authentication failure.
         """
         jwt_token = await self.obtain_jwt_token()
 

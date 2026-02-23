@@ -23,12 +23,14 @@ from minimatrix.cli import (
 
 
 def test_build_parser_rooms() -> None:
+    """Verifies that the 'rooms' subcommand is recognised by the argument parser."""
     parser = build_parser()
     args = parser.parse_args(["rooms"])
     assert args.command == "rooms"
 
 
 def test_build_parser_send_with_message() -> None:
+    """Verifies that 'send' with --room and a positional message argument is parsed correctly."""
     parser = build_parser()
     args = parser.parse_args(["send", "--room", "!abc:example.com", "Hello"])
     assert args.command == "send"
@@ -37,6 +39,7 @@ def test_build_parser_send_with_message() -> None:
 
 
 def test_build_parser_send_without_message() -> None:
+    """Verifies that 'send' without a message argument sets message to None."""
     parser = build_parser()
     args = parser.parse_args(["send", "--room", "!abc:example.com"])
     assert args.command == "send"
@@ -44,6 +47,7 @@ def test_build_parser_send_without_message() -> None:
 
 
 def test_build_parser_listen() -> None:
+    """Verifies that the 'listen' subcommand with the -r room flag is parsed correctly."""
     parser = build_parser()
     args = parser.parse_args(["listen", "-r", "!room:example.com"])
     assert args.command == "listen"
@@ -51,6 +55,7 @@ def test_build_parser_listen() -> None:
 
 
 def test_build_parser_global_options() -> None:
+    """Verifies that global options --user, --password, and --homeserver are parsed correctly."""
     parser = build_parser()
     args = parser.parse_args(["--user", "bot", "--password", "pw", "--homeserver", "https://hs.example.com", "rooms"])
     assert args.user == "bot"
@@ -59,12 +64,14 @@ def test_build_parser_global_options() -> None:
 
 
 def test_build_parser_auth_method_choices() -> None:
+    """Verifies that --auth-method accepts valid choices such as 'jwt'."""
     parser = build_parser()
     args = parser.parse_args(["--auth-method", "jwt", "rooms"])
     assert args.auth_method == "jwt"
 
 
 def test_build_parser_missing_subcommand() -> None:
+    """Verifies that invoking the parser with no subcommand causes a SystemExit."""
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args([])
@@ -76,6 +83,7 @@ def test_build_parser_missing_subcommand() -> None:
 
 
 def test_load_yaml_config_valid(tmp_path: Path) -> None:
+    """Verifies that a well-formed YAML config file is loaded into a dict correctly."""
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(textwrap.dedent("""\
         homeserver: "https://matrix.example.com"
@@ -89,11 +97,13 @@ def test_load_yaml_config_valid(tmp_path: Path) -> None:
 
 
 def test_load_yaml_config_missing_file(tmp_path: Path) -> None:
+    """Verifies that a missing config file returns an empty dict without raising."""
     cfg = _load_yaml_config(tmp_path / "nonexistent.yaml")
     assert cfg == {}
 
 
 def test_load_yaml_config_invalid_yaml(tmp_path: Path) -> None:
+    """Verifies that invalid YAML content does not raise and returns a dict."""
     cfg_file = tmp_path / "bad.yaml"
     cfg_file.write_text("not: [valid: yaml: {")
     # Should not raise, just return empty or partial
@@ -115,6 +125,7 @@ def test_load_yaml_config_non_dict(tmp_path: Path) -> None:
 
 
 def test_merge_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that present env vars override existing config values while absent ones preserve them."""
     monkeypatch.setenv("MATRIX_USER", "envuser")
     monkeypatch.setenv("MATRIX_HOMESERVER", "https://env.example.com")
     monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
@@ -144,6 +155,7 @@ def test_merge_env_no_env_set(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_merge_cli_overrides() -> None:
+    """Verifies that non-None CLI namespace values override config while None values leave config intact."""
     ns = argparse.Namespace(user="cliuser", homeserver="https://cli.example.com", password=None)
     cfg: dict[str, Any] = {"user": "old", "homeserver": "https://old.example.com", "password": "oldpw"}
     result = _merge_cli(cfg, ns)
@@ -191,7 +203,7 @@ def test_resolve_config_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 
 
 def test_resolve_config_priority_cli_over_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """CLI args override environment variables."""
+    """Verifies that CLI args take precedence over environment variables in config resolution."""
     monkeypatch.setenv("MATRIX_USER", "envuser")
     # Clear others
     for var in ("MATRIX_HOMESERVER", "MATRIX_PASSWORD", "AUTH_METHOD"):

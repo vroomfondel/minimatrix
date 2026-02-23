@@ -31,6 +31,7 @@ from minimatrix.config import MiniMatrixConfig, _parse_bool
     ],
 )
 def test_parse_bool(value: str, expected: bool) -> None:
+    """Verifies that _parse_bool correctly converts common truthy and falsy string values."""
     assert _parse_bool(value) is expected
 
 
@@ -58,6 +59,7 @@ def test_from_env_password_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_from_env_custom_homeserver(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that a custom MATRIX_HOMESERVER env var overrides the default value."""
     monkeypatch.setenv("MATRIX_USER", "bot")
     monkeypatch.setenv("MATRIX_PASSWORD", "pw")
     monkeypatch.setenv("MATRIX_HOMESERVER", "https://my.server.com")
@@ -93,6 +95,7 @@ def test_from_env_jwt_auth(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_from_env_missing_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that a missing MATRIX_USER env var raises a ValueError."""
     monkeypatch.delenv("MATRIX_USER", raising=False)
     monkeypatch.setenv("MATRIX_PASSWORD", "pw")
     with pytest.raises(ValueError, match="MATRIX_USER"):
@@ -100,6 +103,7 @@ def test_from_env_missing_user(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_from_env_missing_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that a missing MATRIX_PASSWORD env var raises a ValueError."""
     monkeypatch.setenv("MATRIX_USER", "bot")
     monkeypatch.delenv("MATRIX_PASSWORD", raising=False)
     with pytest.raises(ValueError, match="MATRIX_PASSWORD"):
@@ -107,6 +111,7 @@ def test_from_env_missing_password(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_from_env_invalid_auth_method(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that an unrecognised AUTH_METHOD value raises a ValueError."""
     monkeypatch.setenv("MATRIX_USER", "bot")
     monkeypatch.setenv("MATRIX_PASSWORD", "pw")
     monkeypatch.setenv("AUTH_METHOD", "magic")
@@ -115,6 +120,7 @@ def test_from_env_invalid_auth_method(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_from_env_jwt_missing_keycloak_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that JWT auth without KEYCLOAK_URL raises a ValueError."""
     monkeypatch.setenv("MATRIX_USER", "bot")
     monkeypatch.setenv("MATRIX_PASSWORD", "pw")
     monkeypatch.setenv("AUTH_METHOD", "jwt")
@@ -124,6 +130,7 @@ def test_from_env_jwt_missing_keycloak_url(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_from_env_jwt_missing_keycloak_realm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that JWT auth without KEYCLOAK_REALM raises a ValueError."""
     monkeypatch.setenv("MATRIX_USER", "bot")
     monkeypatch.setenv("MATRIX_PASSWORD", "pw")
     monkeypatch.setenv("AUTH_METHOD", "jwt")
@@ -134,6 +141,7 @@ def test_from_env_jwt_missing_keycloak_realm(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_from_env_jwt_invalid_login_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verifies that an unrecognised JWT_LOGIN_TYPE value raises a ValueError."""
     monkeypatch.setenv("MATRIX_USER", "bot")
     monkeypatch.setenv("MATRIX_PASSWORD", "pw")
     monkeypatch.setenv("AUTH_METHOD", "jwt")

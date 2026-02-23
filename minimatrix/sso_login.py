@@ -48,15 +48,15 @@ class SSONetworkError(SSOLoginError):
 def parse_keycloak_form(page_html: str) -> tuple[str, dict[str, str]]:
     """Extract the form action URL and hidden fields from a Keycloak login page.
 
-    Returns
-    -------
-    tuple[str, dict[str, str]]
-        ``(action_url, hidden_fields)`` where *hidden_fields* maps field names to values.
+    Args:
+        page_html: Raw HTML string of the Keycloak login page.
 
-    Raises
-    ------
-    SSOLoginError
-        If the login form cannot be found in the HTML.
+    Returns:
+        A tuple of ``(action_url, hidden_fields)`` where ``hidden_fields``
+        maps field names to values.
+
+    Raises:
+        SSOLoginError: If the login form cannot be found in the HTML.
     """
     form_match = re.search(r'<form\s[^>]*id=["\']kc-form-login["\'][^>]*action=["\']([^"\']+)["\']', page_html)
     if not form_match:
@@ -84,7 +84,14 @@ def parse_keycloak_form(page_html: str) -> tuple[str, dict[str, str]]:
 
 
 def _extract_login_token(url: str) -> str | None:
-    """Extract ``loginToken`` query parameter from a URL."""
+    """Extract ``loginToken`` query parameter from a URL.
+
+    Args:
+        url: The URL string to parse.
+
+    Returns:
+        The login token string, or None if the parameter is absent.
+    """
     parsed = urlparse(url)
     params = parse_qs(parsed.query)
     tokens = params.get("loginToken", [])
@@ -92,7 +99,14 @@ def _extract_login_token(url: str) -> str | None:
 
 
 def _extract_error_message(page_html: str) -> str:
-    """Try to extract an error message from a Keycloak error page."""
+    """Try to extract an error message from a Keycloak error page.
+
+    Args:
+        page_html: Raw HTML string of the Keycloak response page.
+
+    Returns:
+        A human-readable error message string.
+    """
     # Keycloak renders errors in a span with class kc-feedback-text or in an alert div
     match = re.search(r'class=["\']kc-feedback-text["\'][^>]*>([^<]+)<', page_html)
     if match:
@@ -109,6 +123,15 @@ class SSOLoginHandler:
     """Handles the SSO login flow against a Synapse homeserver with a Keycloak IdP."""
 
     def __init__(self, homeserver: str, idp_id: str, username: str, password: str) -> None:
+        """Initialize the SSO login handler.
+
+        Args:
+            homeserver: Base URL of the Matrix homeserver.
+            idp_id: Identity provider ID as configured in Synapse's
+                ``oidc_providers``.
+            username: Keycloak username.
+            password: Keycloak password.
+        """
         self.homeserver = homeserver.rstrip("/")
         self.idp_id = idp_id
         self.username = username
@@ -117,10 +140,12 @@ class SSOLoginHandler:
     async def obtain_login_token(self) -> str:
         """Run the full SSO redirect chain and return a Matrix login token.
 
-        Raises
-        ------
-        SSOLoginError
-            On any failure during the SSO flow.
+        Returns:
+            A Matrix login token string for use with ``m.login.token``.
+
+        Raises:
+            SSOLoginError: On any failure during the SSO flow.
+            SSONetworkError: On network-level failure.
         """
         jar = aiohttp.CookieJar(unsafe=True)
         try:
@@ -132,6 +157,25 @@ class SSOLoginHandler:
             raise SSONetworkError(f"Network error during SSO flow: {exc}") from exc
 
     async def _do_sso_flow(self, session: aiohttp.ClientSession) -> str:
+        """Execute the multi-step SSO redirect chain within an aiohttp session.
+
+        Performs the following steps:
+        1. GET the Synapse SSO redirect endpoint to obtain the Keycloak auth URL.
+        2. GET the Keycloak auth URL to retrieve the login form HTML.
+        3. Parse the form action URL and hidden fields.
+        4. POST credentials to Keycloak and follow the redirect.
+        5. Follow OIDC callback redirects until a ``loginToken`` is found.
+
+        Args:
+            session: An active aiohttp ClientSession with a cookie jar.
+
+        Returns:
+            A Matrix login token string.
+
+        Raises:
+            SSOLoginError: If any step of the redirect chain fails.
+            SSOAuthError: If Keycloak rejects the credentials.
+        """
         # Step 1: GET the SSO redirect endpoint on Synapse
         sso_url = f"{self.homeserver}/_matrix/client/v3/login/sso/redirect/{self.idp_id}"
         logger.debug("Step 1: GET {}", sso_url)
@@ -199,17 +243,15 @@ class SSOLoginHandler:
     async def perform_login(self, client: AsyncClient) -> LoginResponse:
         """Perform the full SSO login and authenticate the Matrix client.
 
-        Returns
-        -------
-        LoginResponse
+        Args:
+            client: The nio AsyncClient instance to authenticate.
+
+        Returns:
             The successful login response from the Matrix client.
 
-        Raises
-        ------
-        SSOLoginError
-            On any failure during the SSO flow.
-        SSOAuthError
-            On authentication failure (bad credentials or missing role).
+        Raises:
+            SSOLoginError: On any failure during the SSO flow.
+            SSOAuthError: On authentication failure (bad credentials or missing role).
         """
         login_token = await self.obtain_login_token()
 
