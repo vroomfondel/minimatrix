@@ -15,9 +15,12 @@ import signal
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger as glogger
+
+if TYPE_CHECKING:
+    from loguru import Record
 
 from minimatrix import configure_logging, print_banner
 from minimatrix.matrix_client import MatrixClientHandler
@@ -354,21 +357,19 @@ async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
 async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> None:
     """Interactive chat mode: show history, then read and write messages live.
 
-    The input loop runs in a dedicated ``threading.Thread`` using ``input(prompt)``
-    rather than ``asyncio.run_in_executor(None, sys.stdin.readline)``. This is
-    necessary because only a real ``input()`` call activates the ``readline``
-    module, which in turn exposes ``readline.get_line_buffer()`` and
-    ``readline.redisplay()``.  These two functions are the key to the
-    readline-aware output pattern: whenever an asynchronous event (incoming
-    message, loguru log line) needs to print something, the current partial
-    input is captured, the terminal line is cleared with ``\\r\\033[K``, the
-    new content is written, and then the prompt together with the captured
-    buffer are re-rendered so the user's in-progress typing is preserved.
+    The input loop runs in a dedicated ``threading.Thread`` using
+    ``input("")`` with an empty prompt.  The visible ``> `` prompt is managed
+    explicitly via a shared ``_prompt_on_screen`` flag so that exactly one
+    prompt is displayed at any time — either by the async callbacks (after
+    printing an incoming message or log line) or by the input thread (before
+    blocking on the next ``input()`` call).
 
-    Without this pattern, any output arriving while the user is mid-keystroke
-    would interleave with—or overwrite—the text the user is composing,
-    because ``readline`` owns the terminal line and raw ``sys.stdout.write``
-    cannot coordinate with it.
+    GNU ``readline`` is deliberately *not* imported.  ``readline``'s global
+    state is not thread-safe and corrupts the terminal when accessed from
+    both the input thread (which owns ``input()``) and the async thread
+    (which fires nio callbacks and the loguru sink).  Without ``readline``,
+    ``input()`` still supports backspace, Ctrl-U, and Ctrl-W via the
+    terminal driver's canonical-mode line editing.
 
     Loguru receives the same treatment via a custom sink
     (``_interactive_sink``) that replaces the default ``sys.stderr`` sink for
@@ -385,12 +386,30 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         room_id: The Matrix room ID to chat in.
         history_limit: Number of history messages to display.
     """
-    import readline
     import threading
 
     from nio import MegolmEvent, RoomMessageText
 
     from minimatrix import LOGURU_FORMAT, configure_logging
+
+    glogger.level("CHAT", no=25, color="<bold>")
+
+    CHAT_FORMAT = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>\n"
+    )
+
+    def _chat_format(record: "Record") -> str:
+        """Return a loguru format string depending on whether the record is a chat message.
+
+        Args:
+            record: A loguru log record dict.
+
+        Returns:
+            ``CHAT_FORMAT`` for chat messages, ``LOGURU_FORMAT + '\\n'`` otherwise.
+        """
+        if record["level"].name == "CHAT":
+            return CHAT_FORMAT
+        return LOGURU_FORMAT + "\n"
 
     handler = await _create_handler(cfg)
     own_user_id = handler.user_id
@@ -407,55 +426,53 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     history = await handler.fetch_history(room_id, limit=history_limit)
     for msg in history:
         ts = datetime.fromtimestamp(msg["timestamp"] / 1000, tz=timezone.utc)
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{ts_str}] <{msg['sender']}> {msg['body']}")
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
+        print(f"{ts_str} | CHAT     | <{msg['sender']}> {msg['body']}")
     print("--- history above, live messages below ---", flush=True)
 
     prompt = "> "
-    _lock = threading.Lock()
+    _lock = threading.RLock()
+    _prompt_on_screen = False
 
-    def _print_over_prompt(text: str) -> None:
-        """Clear the readline-owned input line, print *text*, then re-render the prompt.
+    def _interactive_sink(message: Any) -> None:
+        """Loguru sink routing chat output to stdout and log output to stderr.
 
-        Acquires ``_lock`` so that concurrent calls from async callbacks and
-        the input thread do not interleave terminal escape sequences.
-
-        Args:
-            text: The fully formatted line to display above the prompt.
-        """
-        with _lock:
-            buf = readline.get_line_buffer()
-            sys.stdout.write(f"\r\033[K{text}\n")
-            sys.stdout.write(f"\r\033[K{prompt}{buf}")
-            sys.stdout.flush()
-            readline.redisplay()
-
-    def _interactive_sink(message: str) -> None:
-        """Loguru sink that cooperates with readline to avoid prompt corruption.
-
-        Works identically to ``_print_over_prompt`` but writes the log
-        *message* to ``sys.stderr`` (where loguru output is conventionally
-        directed) before restoring the prompt on ``sys.stdout``.
+        Inspects ``message.record["extra"]`` to decide the target stream
+        and cursor-control behaviour.  Chat messages (``chat=True``) go to
+        ``sys.stdout``; regular log messages go to ``sys.stderr`` with a
+        prompt re-render on ``sys.stdout``.  Local echo (``cursor_up=True``)
+        moves the cursor up before writing to overwrite the input line.
 
         Args:
-            message: Pre-formatted log string produced by loguru (includes
-                trailing newline).
+            message: Loguru message object (supports ``str()`` and
+                ``.record`` access).
         """
+        nonlocal _prompt_on_screen
+        rec = message.record
+        is_chat = rec["level"].name == "CHAT"
+        cursor_up = rec.get("extra", {}).get("cursor_up", False)
         with _lock:
-            buf = readline.get_line_buffer()
-            sys.stderr.write(f"\r\033[K{message}")
-            sys.stderr.flush()
-            sys.stdout.write(f"\r\033[K{prompt}{buf}")
-            sys.stdout.flush()
-            readline.redisplay()
+            if is_chat:
+                prefix = "\033[A" if cursor_up else ""
+                sys.stdout.write(f"{prefix}\r\033[K{message}")
+                sys.stdout.flush()
+                if not cursor_up:
+                    sys.stdout.write(f"\r\033[K{prompt}")
+                    sys.stdout.flush()
+            else:
+                sys.stderr.write(f"\r\033[K{message}")
+                sys.stderr.flush()
+                sys.stdout.write(f"\r\033[K{prompt}")
+                sys.stdout.flush()
+            _prompt_on_screen = True
 
-    # Swap loguru to readline-aware sink
+    # Swap loguru to prompt-aware sink
     glogger.remove()
     glogger.add(
         _interactive_sink,
         level=os.getenv("LOGURU_LEVEL", "DEBUG"),
-        format=LOGURU_FORMAT,
-        colorize=False,
+        format=_chat_format,
+        colorize=True,
     )
 
     # Callbacks — filter own messages (user sees local echo instead)
@@ -471,9 +488,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         """
         if event.sender == own_user_id:
             return
-        ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-        _print_over_prompt(f"[{ts_str}] <{event.sender}> {event.body}")
+        glogger.log("CHAT", f"<{event.sender}> {event.body}")
 
     async def _on_megolm(room: Any, event: MegolmEvent) -> None:
         """Display a placeholder for an undecryptable encrypted message.
@@ -482,9 +497,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
             room: The nio room object the event was received in.
             event: The ``MegolmEvent`` that could not be decrypted.
         """
-        ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-        _print_over_prompt(f"[{ts_str}] <{event.sender}> [encrypted, unable to decrypt]")
+        glogger.log("CHAT", f"<{event.sender}> [encrypted, unable to decrypt]")
 
     handler.add_event_callback(_on_message, RoomMessageText)
     handler.add_event_callback(_on_megolm, MegolmEvent)
@@ -493,21 +506,28 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     # does not allow asyncio.get_event_loop() from a non-main thread.
     _loop = asyncio.get_event_loop()
 
-    # Input loop in a dedicated thread (uses readline-backed input())
+    # Input loop in a dedicated thread (prompt managed via _prompt_on_screen flag)
     def _input_loop() -> None:
         """Read user input in a dedicated thread and bridge sends to the event loop.
 
-        Runs ``input(prompt)`` in a blocking loop so that the ``readline``
-        module is fully active (history, key bindings, ``get_line_buffer``).
-        Typed messages are dispatched to the asyncio event loop via
-        ``asyncio.run_coroutine_threadsafe``.  Typing ``/quit``, pressing
-        Ctrl-D (``EOFError``), or Ctrl-C (``KeyboardInterrupt``) stops the
-        sync loop and terminates the chat session.
+        Uses ``input("")`` with an empty prompt; the visible ``> `` is
+        printed explicitly and coordinated with async output via the
+        ``_prompt_on_screen`` flag.  Typed messages are dispatched to the
+        asyncio event loop via ``asyncio.run_coroutine_threadsafe``.  Typing
+        ``/quit``, pressing Ctrl-D (``EOFError``), or Ctrl-C
+        (``KeyboardInterrupt``) stops the sync loop and terminates the chat
+        session.
         """
+        nonlocal _prompt_on_screen
         try:
             while True:
+                with _lock:
+                    if not _prompt_on_screen:
+                        sys.stdout.write(prompt)
+                        sys.stdout.flush()
+                    _prompt_on_screen = False
                 try:
-                    text = input(prompt).strip()
+                    text = input("").strip()
                 except (EOFError, KeyboardInterrupt):
                     handler.stop_sync()
                     break
@@ -515,9 +535,9 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
                     handler.stop_sync()
                     break
                 if text:
-                    ts = datetime.now(tz=timezone.utc)
-                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-                    _print_over_prompt(f"[{ts_str}] <{own_user_id}> {text}")
+                    with _lock:
+                        glogger.bind(cursor_up=True).log("CHAT", f"<{own_user_id}> {text}")
+                        _prompt_on_screen = False
                     asyncio.run_coroutine_threadsafe(handler.send_message(room_id, text), _loop)
         finally:
             handler.stop_sync()
