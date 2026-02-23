@@ -354,9 +354,31 @@ async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
 async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> None:
     """Interactive chat mode: show history, then read and write messages live.
 
-    Uses a readline-aware pattern to prevent incoming messages and log output
-    from corrupting the input prompt. Own messages are shown as local echo
-    and filtered from server callbacks to avoid duplication.
+    The input loop runs in a dedicated ``threading.Thread`` using ``input(prompt)``
+    rather than ``asyncio.run_in_executor(None, sys.stdin.readline)``. This is
+    necessary because only a real ``input()`` call activates the ``readline``
+    module, which in turn exposes ``readline.get_line_buffer()`` and
+    ``readline.redisplay()``.  These two functions are the key to the
+    readline-aware output pattern: whenever an asynchronous event (incoming
+    message, loguru log line) needs to print something, the current partial
+    input is captured, the terminal line is cleared with ``\\r\\033[K``, the
+    new content is written, and then the prompt together with the captured
+    buffer are re-rendered so the user's in-progress typing is preserved.
+
+    Without this pattern, any output arriving while the user is mid-keystroke
+    would interleave with—or overwrite—the text the user is composing,
+    because ``readline`` owns the terminal line and raw ``sys.stdout.write``
+    cannot coordinate with it.
+
+    Loguru receives the same treatment via a custom sink
+    (``_interactive_sink``) that replaces the default ``sys.stderr`` sink for
+    the duration of the chat session.  This prevents log messages (e.g. sync
+    status, session warnings) from corrupting the prompt.  On exit,
+    ``configure_logging()`` restores the normal loguru configuration.
+
+    Own messages are displayed immediately as a local echo and filtered out
+    in the server callback (``_on_message``) to avoid showing each message
+    twice—once from the local echo and once from the server-side sync.
 
     Args:
         cfg: Resolved configuration dict.
@@ -393,7 +415,14 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     _lock = threading.Lock()
 
     def _print_over_prompt(text: str) -> None:
-        """Clear the readline-owned input line, print text, then re-render the prompt."""
+        """Clear the readline-owned input line, print *text*, then re-render the prompt.
+
+        Acquires ``_lock`` so that concurrent calls from async callbacks and
+        the input thread do not interleave terminal escape sequences.
+
+        Args:
+            text: The fully formatted line to display above the prompt.
+        """
         with _lock:
             buf = readline.get_line_buffer()
             sys.stdout.write(f"\r\033[K{text}\n")
@@ -402,7 +431,16 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
             readline.redisplay()
 
     def _interactive_sink(message: str) -> None:
-        """Loguru sink that cooperates with readline to avoid prompt corruption."""
+        """Loguru sink that cooperates with readline to avoid prompt corruption.
+
+        Works identically to ``_print_over_prompt`` but writes the log
+        *message* to ``sys.stderr`` (where loguru output is conventionally
+        directed) before restoring the prompt on ``sys.stdout``.
+
+        Args:
+            message: Pre-formatted log string produced by loguru (includes
+                trailing newline).
+        """
         with _lock:
             buf = readline.get_line_buffer()
             sys.stderr.write(f"\r\033[K{message}")
@@ -422,6 +460,15 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
 
     # Callbacks — filter own messages (user sees local echo instead)
     async def _on_message(room: Any, event: RoomMessageText) -> None:
+        """Display an incoming plaintext message, skipping own messages.
+
+        Own messages are suppressed because the input loop already shows
+        a local echo; displaying them again would duplicate every sent line.
+
+        Args:
+            room: The nio room object the event was received in.
+            event: The incoming ``RoomMessageText`` event.
+        """
         if event.sender == own_user_id:
             return
         ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
@@ -429,6 +476,12 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         _print_over_prompt(f"[{ts_str}] <{event.sender}> {event.body}")
 
     async def _on_megolm(room: Any, event: MegolmEvent) -> None:
+        """Display a placeholder for an undecryptable encrypted message.
+
+        Args:
+            room: The nio room object the event was received in.
+            event: The ``MegolmEvent`` that could not be decrypted.
+        """
         ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
         _print_over_prompt(f"[{ts_str}] <{event.sender}> [encrypted, unable to decrypt]")
@@ -436,9 +489,21 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     handler.add_event_callback(_on_message, RoomMessageText)
     handler.add_event_callback(_on_megolm, MegolmEvent)
 
+    # Capture the running event loop *before* spawning the thread — Python 3.12+
+    # does not allow asyncio.get_event_loop() from a non-main thread.
+    _loop = asyncio.get_event_loop()
+
     # Input loop in a dedicated thread (uses readline-backed input())
     def _input_loop() -> None:
-        loop = asyncio.get_event_loop()
+        """Read user input in a dedicated thread and bridge sends to the event loop.
+
+        Runs ``input(prompt)`` in a blocking loop so that the ``readline``
+        module is fully active (history, key bindings, ``get_line_buffer``).
+        Typed messages are dispatched to the asyncio event loop via
+        ``asyncio.run_coroutine_threadsafe``.  Typing ``/quit``, pressing
+        Ctrl-D (``EOFError``), or Ctrl-C (``KeyboardInterrupt``) stops the
+        sync loop and terminates the chat session.
+        """
         try:
             while True:
                 try:
@@ -453,7 +518,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
                     ts = datetime.now(tz=timezone.utc)
                     ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
                     _print_over_prompt(f"[{ts_str}] <{own_user_id}> {text}")
-                    asyncio.run_coroutine_threadsafe(handler.send_message(room_id, text), loop)
+                    asyncio.run_coroutine_threadsafe(handler.send_message(room_id, text), _loop)
         finally:
             handler.stop_sync()
 

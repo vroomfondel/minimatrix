@@ -1,3 +1,15 @@
+"""minimatrix — standalone Matrix protocol CLI client with E2E encryption.
+
+This package exposes the ``minimatrix`` console script (entry point
+``minimatrix.cli:main``) and the supporting ``MatrixClientHandler`` that
+wraps ``matrix-nio[e2e]`` for all Matrix protocol operations.
+
+Logging is handled exclusively through **loguru**.  The root logger is
+disabled at import time (``glogger.disable(__name__)``) so that library
+consumers are not affected; the CLI entry point explicitly enables it via
+``configure_logging()`` and ``glogger.enable("minimatrix")``.
+"""
+
 __version__ = "0.0.11"
 
 import os
@@ -11,7 +23,15 @@ glogger.disable(__name__)
 
 
 def _loguru_skiplog_filter(record: dict) -> bool:  # type: ignore[type-arg]
-    """Filter function to hide records with ``extra['skiplog']`` set."""
+    """Filter function to hide records with ``extra['skiplog']`` set.
+
+    Args:
+        record: A loguru log record dict.
+
+    Returns:
+        ``False`` when the record carries ``extra['skiplog'] == True``,
+        suppressing it from the sink; ``True`` otherwise.
+    """
     return not record.get("extra", {}).get("skiplog", False)
 
 
@@ -23,7 +43,18 @@ LOGURU_FORMAT: str = (
 def configure_logging(
     loguru_filter: Callable[[Dict[str, Any]], bool] = _loguru_skiplog_filter,
 ) -> None:
-    """Configure a default ``loguru`` sink with a convenient format and filter."""
+    """Configure a default ``loguru`` sink with a convenient format and filter.
+
+    Removes all existing sinks, then adds a single ``sys.stderr`` sink
+    using ``LOGURU_FORMAT`` and the given *loguru_filter*.  The log level
+    is read from the ``LOGURU_LEVEL`` environment variable (defaulting to
+    ``DEBUG``).
+
+    Args:
+        loguru_filter: A callable accepting a loguru record dict and
+            returning ``True`` to keep or ``False`` to suppress the
+            record.  Defaults to ``_loguru_skiplog_filter``.
+    """
     os.environ["LOGURU_LEVEL"] = os.getenv("LOGURU_LEVEL", "DEBUG")
     glogger.remove()
     glogger.add(sys.stderr, level=os.getenv("LOGURU_LEVEL"), format=LOGURU_FORMAT, filter=loguru_filter)  # type: ignore[arg-type]
