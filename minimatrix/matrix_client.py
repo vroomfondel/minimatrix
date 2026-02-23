@@ -562,14 +562,17 @@ class MatrixClientHandler:
         from nio.responses import DeleteDevicesAuthResponse, DeleteDevicesResponse
 
         devices = await self.list_devices()
+        logger.debug("Found {} device(s) total, current device_id={}", len(devices), self._client.device_id)
         other_ids = [d["device_id"] for d in devices if d["device_id"] != self._client.device_id]
         if not other_ids:
             logger.info("No other devices to delete")
             return 0
 
+        logger.info("Deleting {} other device(s): {}", len(other_ids), other_ids)
         # First call without auth to get session ID
         resp = await self._client.delete_devices(other_ids)
         if isinstance(resp, DeleteDevicesAuthResponse):
+            logger.debug("UIA challenge received (session={}), retrying with password auth", resp.session)
             # UIA required — retry with password auth
             auth = {
                 "type": "m.login.password",
@@ -622,7 +625,25 @@ class MatrixClientHandler:
             if not old_device_id:
                 continue
 
-            logger.info("Exporting keys from old device {}", old_device_id)
+            devices_processed += 1
+
+            # Check session count via direct SQLite query to skip the expensive
+            # export/import cycle (PBKDF2 ~4s) for stores with no megolm sessions.
+            import sqlite3
+
+            try:
+                conn = sqlite3.connect(db_path)
+                session_count = conn.execute("SELECT COUNT(*) FROM megolminboundsessions").fetchone()[0]
+                conn.close()
+            except sqlite3.Error as exc:
+                logger.warning("Could not query sessions in {}: {}", db_path, exc)
+                session_count = -1  # unknown, proceed with export
+
+            if session_count == 0:
+                logger.info("Skipping device {} — 0 megolm sessions in store", old_device_id)
+                continue
+
+            logger.info("Exporting keys from old device {} ({} session(s))", old_device_id, session_count)
 
             nio_config = AsyncClientConfig(encryption_enabled=True, store_sync_tokens=True)
             tmp_client = AsyncClient(
@@ -649,14 +670,12 @@ class MatrixClientHandler:
 
                 await tmp_client.export_keys(export_path, passphrase)
                 if os.path.getsize(export_path) > 0:
-                    import_resp = await self._client.import_keys(export_path, passphrase)
-                    if hasattr(import_resp, "keys"):
-                        count = len(import_resp.keys) if import_resp.keys else 0
-                    else:
-                        count = 0
-                    sessions_imported += count
-                    devices_processed += 1
-                    logger.info("Imported {} session(s) from device {}", count, old_device_id)
+                    # import_keys() returns None — use the SQLite count instead
+                    await self._client.import_keys(export_path, passphrase)
+                    sessions_imported += session_count if session_count > 0 else 0
+                    logger.info(
+                        "Exported and imported {} megolm session(s) from device {}", session_count, old_device_id
+                    )
                 else:
                     logger.warning("No keys exported from device {}", old_device_id)
             except Exception as exc:
@@ -666,7 +685,7 @@ class MatrixClientHandler:
                 if export_path and os.path.exists(export_path):
                     os.unlink(export_path)
 
-        if delete_old and devices_processed > 0:
+        if delete_old and old_dbs:
             for db_path in old_dbs:
                 base = db_path[: -len(".db")]
                 for suffix in (".db", ".trusted_devices", ".blacklisted_devices", ".ignored_devices"):
