@@ -12,11 +12,44 @@ consumers are not affected; the CLI entry point explicitly enables it via
 
 __version__ = "0.0.11"
 
+import logging
 import os
 import sys
+import types
 from typing import Any, Callable, Dict
 
 from loguru import logger as glogger
+
+
+class _InterceptHandler(logging.Handler):
+    """Route standard ``logging`` records into loguru.
+
+    Installed on the root logger so that libraries using the stdlib
+    ``logging`` module (e.g. ``matrix-nio``) have their output formatted
+    and coloured consistently by loguru instead of printing raw to stderr.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: D401
+        # Map stdlib level to loguru level name
+        try:
+            level: str | int = glogger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+
+        # Walk the stack to find the frame depth outside of the logging module
+        # so that loguru reports the correct caller location.
+        current: types.FrameType | None = logging.currentframe()
+        depth = 0
+        while current is not None:
+            if current.f_code.co_filename != logging.__file__:
+                depth += 1
+                if depth > 1:
+                    break
+            current = current.f_back
+
+        glogger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
 from tabulate import tabulate
 
 glogger.disable(__name__)
@@ -59,6 +92,9 @@ def configure_logging(
     glogger.remove()
     glogger.add(sys.stderr, level=os.getenv("LOGURU_LEVEL"), format=LOGURU_FORMAT, filter=loguru_filter)  # type: ignore[arg-type]
     glogger.configure(extra={"classname": "None", "skiplog": False})
+
+    # Intercept stdlib logging (e.g. matrix-nio) → loguru
+    logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
 
 
 def print_banner() -> None:

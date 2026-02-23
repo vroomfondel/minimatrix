@@ -224,18 +224,18 @@ async def cmd_rooms(cfg: dict[str, Any]) -> None:
         rooms = handler.rooms
         invited = handler.invited_rooms
         if not rooms and not invited:
-            print("No joined rooms or pending invites.")
+            logger.info("No joined rooms or pending invites.")
             return
         if rooms:
-            print("Joined rooms:")
+            logger.info("Joined rooms:")
             for room_id, room in rooms.items():
                 display_name = getattr(room, "display_name", room_id) or room_id
                 member_count = getattr(room, "member_count", "?")
-                print(f"  {room_id}  {display_name}  (members: {member_count})")
+                logger.info("  {}  {}  (members: {})", room_id, display_name, member_count)
         if invited:
-            print("Pending invites:")
+            logger.info("Pending invites:")
             for room_id, room in invited.items():
-                print(_format_invite(room_id, room, handler))
+                logger.info("{}", _format_invite(room_id, room, handler))
     finally:
         await handler.close()
 
@@ -250,10 +250,10 @@ async def cmd_invites_list(cfg: dict[str, Any]) -> None:
     try:
         invited = handler.invited_rooms
         if not invited:
-            print("No pending invites.")
+            logger.info("No pending invites.")
             return
         for room_id, room in invited.items():
-            print(_format_invite(room_id, room, handler))
+            logger.info("{}", _format_invite(room_id, room, handler))
     finally:
         await handler.close()
 
@@ -292,16 +292,18 @@ async def cmd_devices_list(cfg: dict[str, Any]) -> None:
     try:
         devices = await handler.list_devices()
         if not devices:
-            print("No devices found.")
+            logger.info("No devices found.")
             return
         current = handler.device_id
         for d in devices:
             marker = " (this device)" if d["device_id"] == current else ""
-            print(
-                f"  {d['device_id']}{marker}  "
-                f"name={d['display_name']}  "
-                f"ip={d['last_seen_ip']}  "
-                f"last_seen={d['last_seen_date']}"
+            logger.info(
+                "  {}{}  name={}  ip={}  last_seen={}",
+                d["device_id"],
+                marker,
+                d["display_name"],
+                d["last_seen_ip"],
+                d["last_seen_date"],
             )
     finally:
         await handler.close()
@@ -317,7 +319,7 @@ async def cmd_devices_purge(cfg: dict[str, Any]) -> None:
     try:
         password = cfg.get("password", "")
         deleted = await handler.delete_other_devices(password)
-        print(f"Deleted {deleted} device(s).")
+        logger.info("Deleted {} device(s).", deleted)
     finally:
         await handler.close()
 
@@ -332,7 +334,7 @@ async def cmd_devices_import_keys(cfg: dict[str, Any], delete_old: bool) -> None
     handler = await _create_handler(cfg)
     try:
         sessions, devices = await handler.import_keys_from_old_stores(delete_old=delete_old)
-        print(f"Imported {sessions} session(s) from {devices} old device(s).")
+        logger.info("Imported {} session(s) from {} old device(s).", sessions, devices)
     finally:
         await handler.close()
 
@@ -394,8 +396,13 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
 
     glogger.level("CHAT", no=25, color="<bold>")
 
-    CHAT_FORMAT = (
-        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>\n"
+    CHAT_FORMAT_LIVE = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | "
+        "<cyan>{extra[sender]}</cyan> <level>{message}</level>\n"
+    )
+    CHAT_FORMAT_HISTORY = (
+        "<green>{extra[ts]}</green> | <level>{level: <8}</level> | "
+        "<cyan>{extra[sender]}</cyan> <level>{message}</level>\n"
     )
 
     def _chat_format(record: "Record") -> str:
@@ -405,10 +412,12 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
             record: A loguru log record dict.
 
         Returns:
-            ``CHAT_FORMAT`` for chat messages, ``LOGURU_FORMAT + '\\n'`` otherwise.
+            A history or live chat format for CHAT messages, ``LOGURU_FORMAT + '\\n'`` otherwise.
         """
         if record["level"].name == "CHAT":
-            return CHAT_FORMAT
+            if "ts" in record["extra"]:
+                return CHAT_FORMAT_HISTORY
+            return CHAT_FORMAT_LIVE
         return LOGURU_FORMAT + "\n"
 
     handler = await _create_handler(cfg)
@@ -422,14 +431,8 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
 
     await handler.trust_devices_in_room(room_id)
 
-    # Display message history
-    history = await handler.fetch_history(room_id, limit=history_limit)
-    for msg in history:
-        ts = datetime.fromtimestamp(msg["timestamp"] / 1000, tz=timezone.utc)
-        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
-        print(f"{ts_str} | CHAT     | <{msg['sender']}> {msg['body']}")
-    print("--- history above, live messages below ---", flush=True)
-
+    # Swap loguru to chat-aware sink *before* printing history so that
+    # history lines use the same CHAT_FORMAT as live messages.
     prompt = "> "
     _lock = threading.RLock()
     _prompt_on_screen = False
@@ -475,6 +478,14 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         colorize=True,
     )
 
+    # Display message history through loguru so colors match live messages
+    history = await handler.fetch_history(room_id, limit=history_limit)
+    for msg in history:
+        ts = datetime.fromtimestamp(msg["timestamp"] / 1000, tz=timezone.utc)
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S.") + f"{ts.microsecond // 1000:03d}"
+        glogger.bind(sender=f"<{msg['sender']}>", ts=ts_str).log("CHAT", msg["body"])
+    glogger.opt(raw=True).info("--- history above, live messages below ---\n")
+
     # Callbacks — filter own messages (user sees local echo instead)
     async def _on_message(room: Any, event: RoomMessageText) -> None:
         """Display an incoming plaintext message, skipping own messages.
@@ -488,7 +499,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         """
         if event.sender == own_user_id:
             return
-        glogger.log("CHAT", f"<{event.sender}> {event.body}")
+        glogger.bind(sender=f"<{event.sender}>").log("CHAT", event.body)
 
     async def _on_megolm(room: Any, event: MegolmEvent) -> None:
         """Display a placeholder for an undecryptable encrypted message.
@@ -497,7 +508,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
             room: The nio room object the event was received in.
             event: The ``MegolmEvent`` that could not be decrypted.
         """
-        glogger.log("CHAT", f"<{event.sender}> [encrypted, unable to decrypt]")
+        glogger.bind(sender=f"<{event.sender}>").log("CHAT", "[encrypted, unable to decrypt]")
 
     handler.add_event_callback(_on_message, RoomMessageText)
     handler.add_event_callback(_on_megolm, MegolmEvent)
@@ -536,7 +547,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
                     break
                 if text:
                     with _lock:
-                        glogger.bind(cursor_up=True).log("CHAT", f"<{own_user_id}> {text}")
+                        glogger.bind(cursor_up=True, sender=f"<{own_user_id}>").log("CHAT", text)
                         _prompt_on_screen = False
                     asyncio.run_coroutine_threadsafe(handler.send_message(room_id, text), _loop)
         finally:
@@ -581,10 +592,10 @@ async def cmd_listen(cfg: dict[str, Any], room_id: str) -> None:
             return
         ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{ts_str}] <{event.sender}> {event.body}", flush=True)
+        logger.info("[{}] <{}> {}", ts_str, event.sender, event.body)
 
     async def _on_megolm(room: Any, event: MegolmEvent) -> None:
-        """Print a placeholder for an undecryptable encrypted message.
+        """Log a placeholder for an undecryptable encrypted message.
 
         Args:
             room: The nio room object the event was received in.
@@ -592,7 +603,7 @@ async def cmd_listen(cfg: dict[str, Any], room_id: str) -> None:
         """
         ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
         ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
-        print(f"[{ts_str}] <{event.sender}> [encrypted, unable to decrypt]", flush=True)
+        logger.info("[{}] <{}> [encrypted, unable to decrypt]", ts_str, event.sender)
 
     handler.add_event_callback(_on_message, RoomMessageText)
     handler.add_event_callback(_on_megolm, MegolmEvent)
