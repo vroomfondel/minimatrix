@@ -94,7 +94,7 @@ def configure_logging(
     glogger.configure(extra={"classname": "None", "skiplog": False})
 
     # Intercept stdlib logging (e.g. matrix-nio) → loguru
-    logging.basicConfig(handlers=[_InterceptHandler()], level=0, force=True)
+    logging.basicConfig(handlers=[_InterceptHandler()], level=logging.WARNING, force=True)
 
 
 def print_banner() -> None:

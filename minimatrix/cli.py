@@ -517,6 +517,8 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     # does not allow asyncio.get_event_loop() from a non-main thread.
     _loop = asyncio.get_event_loop()
 
+    _shutdown = threading.Event()
+
     # Input loop in a dedicated thread (prompt managed via _prompt_on_screen flag)
     def _input_loop() -> None:
         """Read user input in a dedicated thread and bridge sends to the event loop.
@@ -531,7 +533,7 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         """
         nonlocal _prompt_on_screen
         try:
-            while True:
+            while not _shutdown.is_set():
                 with _lock:
                     if not _prompt_on_screen:
                         sys.stdout.write(prompt)
@@ -562,6 +564,14 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     except asyncio.CancelledError:
         pass
     finally:
+        _shutdown.set()
+        # Close stdin to unblock the input() call in the reader thread so it
+        # can observe the shutdown flag and exit instead of hanging.
+        try:
+            sys.stdin.close()
+        except OSError:
+            pass
+        input_thread.join(timeout=2)
         configure_logging()  # restore normal loguru sink
         await handler.close()
 
