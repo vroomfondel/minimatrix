@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone Matrix CLI — send, listen, and list rooms using the MatrixClientHandler.
+"""Standalone Matrix CLI — send, listen, chat, and list rooms using the MatrixClientHandler.
 
 Config:   ~/.config/minimatrix/config.yaml (optional)
 
@@ -351,6 +351,125 @@ async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
         await handler.close()
 
 
+async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> None:
+    """Interactive chat mode: show history, then read and write messages live.
+
+    Uses a readline-aware pattern to prevent incoming messages and log output
+    from corrupting the input prompt. Own messages are shown as local echo
+    and filtered from server callbacks to avoid duplication.
+
+    Args:
+        cfg: Resolved configuration dict.
+        room_id: The Matrix room ID to chat in.
+        history_limit: Number of history messages to display.
+    """
+    import readline
+    import threading
+
+    from nio import MegolmEvent, RoomMessageText
+
+    from minimatrix import LOGURU_FORMAT, configure_logging
+
+    handler = await _create_handler(cfg)
+    own_user_id = handler.user_id
+
+    try:
+        await handler.join_room(room_id)
+    except RuntimeError:
+        await handler.close()
+        sys.exit(1)
+
+    await handler.trust_devices_in_room(room_id)
+
+    # Display message history
+    history = await handler.fetch_history(room_id, limit=history_limit)
+    for msg in history:
+        ts = datetime.fromtimestamp(msg["timestamp"] / 1000, tz=timezone.utc)
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[{ts_str}] <{msg['sender']}> {msg['body']}")
+    print("--- history above, live messages below ---", flush=True)
+
+    prompt = "> "
+    _lock = threading.Lock()
+
+    def _print_over_prompt(text: str) -> None:
+        """Clear the readline-owned input line, print text, then re-render the prompt."""
+        with _lock:
+            buf = readline.get_line_buffer()
+            sys.stdout.write(f"\r\033[K{text}\n")
+            sys.stdout.write(f"\r\033[K{prompt}{buf}")
+            sys.stdout.flush()
+            readline.redisplay()
+
+    def _interactive_sink(message: str) -> None:
+        """Loguru sink that cooperates with readline to avoid prompt corruption."""
+        with _lock:
+            buf = readline.get_line_buffer()
+            sys.stderr.write(f"\r\033[K{message}")
+            sys.stderr.flush()
+            sys.stdout.write(f"\r\033[K{prompt}{buf}")
+            sys.stdout.flush()
+            readline.redisplay()
+
+    # Swap loguru to readline-aware sink
+    glogger.remove()
+    glogger.add(
+        _interactive_sink,
+        level=os.getenv("LOGURU_LEVEL", "DEBUG"),
+        format=LOGURU_FORMAT,
+        colorize=False,
+    )
+
+    # Callbacks — filter own messages (user sees local echo instead)
+    async def _on_message(room: Any, event: RoomMessageText) -> None:
+        if event.sender == own_user_id:
+            return
+        ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+        _print_over_prompt(f"[{ts_str}] <{event.sender}> {event.body}")
+
+    async def _on_megolm(room: Any, event: MegolmEvent) -> None:
+        ts = datetime.fromtimestamp(event.server_timestamp / 1000, tz=timezone.utc)
+        ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+        _print_over_prompt(f"[{ts_str}] <{event.sender}> [encrypted, unable to decrypt]")
+
+    handler.add_event_callback(_on_message, RoomMessageText)
+    handler.add_event_callback(_on_megolm, MegolmEvent)
+
+    # Input loop in a dedicated thread (uses readline-backed input())
+    def _input_loop() -> None:
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                try:
+                    text = input(prompt).strip()
+                except (EOFError, KeyboardInterrupt):
+                    handler.stop_sync()
+                    break
+                if text == "/quit":
+                    handler.stop_sync()
+                    break
+                if text:
+                    ts = datetime.now(tz=timezone.utc)
+                    ts_str = ts.strftime("%Y-%m-%d %H:%M:%S")
+                    _print_over_prompt(f"[{ts_str}] <{own_user_id}> {text}")
+                    asyncio.run_coroutine_threadsafe(handler.send_message(room_id, text), loop)
+        finally:
+            handler.stop_sync()
+
+    input_thread = threading.Thread(target=_input_loop, daemon=True, name="ChatInput")
+    input_thread.start()
+
+    # Run sync loop (blocks until stop_sync is called)
+    try:
+        await handler.sync_forever(timeout=30000)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        configure_logging()  # restore normal loguru sink
+        await handler.close()
+
+
 async def cmd_listen(cfg: dict[str, Any], room_id: str) -> None:
     """Listen for messages in a room and print them to stdout.
 
@@ -418,7 +537,7 @@ def build_parser() -> argparse.ArgumentParser:
     """
     parser = argparse.ArgumentParser(
         prog="minimatrix",
-        description="minimatrix — standalone Matrix CLI client: send, listen, list rooms.",
+        description="minimatrix — standalone Matrix CLI client: send, listen, chat, list rooms.",
     )
     parser.add_argument("--config", "-c", help=f"YAML config file (default: {DEFAULT_CONFIG_FILE})")
     parser.add_argument("--homeserver", help="Matrix homeserver URL")
@@ -456,6 +575,13 @@ def build_parser() -> argparse.ArgumentParser:
     # --- listen ---
     sp_listen = subparsers.add_parser("listen", help="Listen for messages in a room")
     sp_listen.add_argument("--room", "-r", required=True, help="Room ID (e.g. !abc:example.com)")
+
+    # --- chat ---
+    sp_chat = subparsers.add_parser("chat", help="Interactive chat in a room")
+    sp_chat.add_argument("--room", "-r", required=True, help="Room ID (e.g. !abc:example.com)")
+    sp_chat.add_argument(
+        "--history", "-n", type=int, default=50, help="Number of history messages to show (default: 50)"
+    )
 
     # --- rooms ---
     subparsers.add_parser("rooms", help="List joined rooms and pending invites")
@@ -535,6 +661,8 @@ def main() -> None:
             loop.run_until_complete(cmd_send(cfg, args.room, message))
         elif args.command == "listen":
             loop.run_until_complete(cmd_listen(cfg, args.room))
+        elif args.command == "chat":
+            loop.run_until_complete(cmd_chat(cfg, args.room, args.history))
         elif args.command == "devices":
             if getattr(args, "devices_command", None) == "purge":
                 loop.run_until_complete(cmd_devices_purge(cfg))

@@ -510,6 +510,41 @@ class MatrixClientHandler:
             except Exception as exc:
                 logger.warning("Failed to auto-join {}: {}", room_id, exc)
 
+    async def fetch_history(self, room_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch recent message history for a room.
+
+        Args:
+            room_id: The Matrix room ID to fetch history from.
+            limit: Maximum number of messages to retrieve.
+
+        Returns:
+            A list of dicts with keys ``sender``, ``body``, ``timestamp``, ``event_type``,
+            sorted chronologically (oldest first).
+        """
+        from nio import RoomMessagesResponse
+        from nio.responses import RoomMessagesError
+
+        start_token = self._client.next_batch or ""
+        resp = await self._client.room_messages(room_id, start=start_token, limit=limit)
+        if isinstance(resp, RoomMessagesError):
+            logger.error("Failed to fetch history for {}: {}", room_id, resp)
+            return []
+
+        messages: list[dict[str, Any]] = []
+        for event in resp.chunk:
+            if hasattr(event, "body") and hasattr(event, "sender"):
+                messages.append(
+                    {
+                        "sender": event.sender,
+                        "body": event.body,
+                        "timestamp": event.server_timestamp,
+                        "event_type": type(event).__name__,
+                    }
+                )
+        # room_messages with back direction returns newest first — reverse for chronological order
+        messages.reverse()
+        return messages
+
     async def sync_forever(self, timeout: int = 30000) -> None:
         """Run the sync loop indefinitely.
 
@@ -518,6 +553,10 @@ class MatrixClientHandler:
         """
         logger.info("Listening for commands ...")
         await self._client.sync_forever(timeout=timeout)
+
+    def stop_sync(self) -> None:
+        """Stop the running sync_forever loop."""
+        self._client.stop_sync_forever()
 
     # -- Device management -----------------------------------------------------
 
