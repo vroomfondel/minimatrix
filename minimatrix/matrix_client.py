@@ -645,8 +645,7 @@ class MatrixClientHandler:
                     access_token="not-needed",
                 )
 
-                with tempfile.NamedTemporaryFile(suffix=".keys", delete=False) as tf:
-                    export_path = tf.name
+                export_path = tempfile.mktemp(suffix=".keys")
 
                 await tmp_client.export_keys(export_path, passphrase)
                 if os.path.getsize(export_path) > 0:
