@@ -6,6 +6,7 @@ Provides a clean interface for Matrix/Synapse interactions including authenticat
 
 from __future__ import annotations
 
+import glob
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -41,8 +42,19 @@ class MatrixClientHandler:
         self._homeserver = homeserver
         self._user = user
         self._crypto_store_path = crypto_store_path
+        # Invite metadata extracted from the raw SyncResponse, keyed by room_id.
+        # Matrix guarantees at most one active invite per room per user — a re-invite
+        # (after leave) replaces the previous one in Synapse's state, so a simple
+        # room_id -> metadata dict is sufficient.
+        self._invite_metadata: dict[str, dict[str, Any]] = {}  # room_id -> {is_dm, invite_ts}
 
         os.makedirs(crypto_store_path, exist_ok=True)
+
+        # Recover device_id from existing crypto store DB to avoid creating new devices on every run
+        device_id = self._recover_device_id(crypto_store_path, user)
+        if device_id:
+            logger.info("Reusing existing device_id={} from crypto store", device_id)
+
         nio_config = AsyncClientConfig(
             encryption_enabled=True,
             store_sync_tokens=True,
@@ -50,9 +62,31 @@ class MatrixClientHandler:
         self._client = AsyncClient(
             homeserver,
             user,
+            device_id=device_id or "",
             store_path=crypto_store_path,
             config=nio_config,
         )
+
+    @staticmethod
+    def _recover_device_id(store_path: str, user: str) -> str | None:
+        """Recover device_id from an existing nio crypto store SQLite DB."""
+        import sqlite3
+
+        pattern = os.path.join(store_path, f"{user}_*.db")
+        matches = glob.glob(pattern)
+        if not matches:
+            return None
+        # Use the most recently modified store
+        latest = max(matches, key=os.path.getmtime)
+        try:
+            conn = sqlite3.connect(latest)
+            row = conn.execute("SELECT device_id FROM accounts WHERE user_id = ? LIMIT 1", (user,)).fetchone()
+            conn.close()
+            if row and row[0]:
+                return str(row[0])
+        except sqlite3.Error as exc:
+            logger.warning("Could not read device_id from {}: {}", latest, exc)
+        return None
 
     @property
     def client(self) -> AsyncClient:
@@ -68,6 +102,11 @@ class MatrixClientHandler:
     def rooms(self) -> dict[str, Any]:
         """Return the dict of joined rooms."""
         return dict(self._client.rooms)
+
+    @property
+    def invited_rooms(self) -> dict[str, Any]:
+        """Return the dict of rooms with pending invites."""
+        return dict(self._client.invited_rooms)
 
     # -- Login methods ---------------------------------------------------------
 
@@ -170,12 +209,12 @@ class MatrixClientHandler:
             realm=keycloak_realm,
             client_id=keycloak_client_id,
             client_secret=keycloak_client_secret,
-            username=self._user,
+            username=self._user.removeprefix("@").split(":")[0],
             password=password,
             login_type=jwt_login_type,
         )
         try:
-            return await handler.perform_login(self._client)
+            return await handler.perform_login(self._client, device_id=self._client.device_id or None)
         except JWTLoginError as exc:
             logger.error("JWT login failed: {}", exc)
             sys.exit(1)
@@ -260,26 +299,82 @@ class MatrixClientHandler:
 
     # -- Sync ------------------------------------------------------------------
 
-    async def initial_sync(self, timeout: int = 10000) -> str | None:
+    async def initial_sync(self, timeout: int = 10000, auto_join: bool = False) -> str | None:
         """Perform an initial sync and return the next_batch token.
 
         Parameters
         ----------
         timeout
             Sync timeout in milliseconds.
+        auto_join
+            Automatically accept all pending room invitations.
 
         Returns
         -------
         str | None
             The next_batch token if sync succeeded, None otherwise.
         """
+        # Force a full sync to pick up pending invites and current room state,
+        # regardless of any stored next_batch token from a previous session.
+        self._client.next_batch = ""
+        self._client.loaded_sync_token = ""
         logger.info("Running initial sync ...")
-        sync_resp = await self._client.sync(timeout=timeout)
+        sync_resp = await self._client.sync(timeout=timeout, full_state=True)
         if isinstance(sync_resp, SyncResponse):
             self._client.next_batch = sync_resp.next_batch
             logger.info("Initial sync complete.")
+            self._extract_invite_metadata(sync_resp)
+            if auto_join:
+                logger.info("Auto-join enabled — accepting pending invitations")
+                await self._auto_join_invited_rooms()
             return str(sync_resp.next_batch)
         return None
+
+    def _extract_invite_metadata(self, sync_resp: SyncResponse) -> None:
+        """Extract invite timestamps and is_direct from the raw SyncResponse."""
+        from nio.events.invite_events import InviteMemberEvent
+
+        for room_id, invite_info in sync_resp.rooms.invite.items():
+            meta: dict[str, Any] = {"is_dm": False, "invite_ts": None}
+            for evt in invite_info.invite_state:
+                if isinstance(evt, InviteMemberEvent) and evt.membership == "invite":
+                    source = getattr(evt, "source", {})
+                    meta["invite_ts"] = source.get("origin_server_ts")
+                    content = getattr(evt, "content", {})
+                    if content.get("is_direct") or source.get("content", {}).get("is_direct"):
+                        meta["is_dm"] = True
+            self._invite_metadata[room_id] = meta
+
+    def get_invite_metadata(self, room_id: str) -> dict[str, Any]:
+        """Return invite metadata (is_dm, invite_ts) for a room."""
+        return self._invite_metadata.get(room_id, {"is_dm": False, "invite_ts": None})
+
+    async def _auto_join_invited_rooms(self) -> None:
+        """Automatically accept all pending room invitations."""
+        from datetime import datetime, timezone
+
+        for room_id, room in list(self._client.invited_rooms.items()):
+            inviter = getattr(room, "inviter", None) or "unknown"
+            meta = self.get_invite_metadata(room_id)
+            is_dm = meta["is_dm"]
+            invite_ts = meta["invite_ts"]
+            ts_str = datetime.fromtimestamp(invite_ts / 1000, tz=timezone.utc).isoformat() if invite_ts else "unknown"
+            kind = "DM" if is_dm else "Room"
+
+            member_count = getattr(room, "member_count", "?")
+            logger.info(
+                "Auto-joining {} {} (invited by {}, type={}, members={}, invited_at={})",
+                kind,
+                room_id,
+                inviter,
+                kind,
+                member_count,
+                ts_str,
+            )
+            try:
+                await self._client.join(room_id)
+            except Exception as exc:
+                logger.warning("Failed to auto-join {}: {}", room_id, exc)
 
     async def sync_forever(self, timeout: int = 30000) -> None:
         """Run the sync loop indefinitely.

@@ -6,6 +6,8 @@ authenticate against Synapse via ``com.famedly.login.token`` (synapse-token-auth
 
 from __future__ import annotations
 
+from typing import Any
+
 import aiohttp
 from loguru import logger as glogger
 from nio import AsyncClient, LoginResponse
@@ -104,7 +106,7 @@ class JWTLoginHandler:
         except aiohttp.ClientError as exc:
             raise JWTNetworkError(f"Network error during JWT token request: {exc}") from exc
 
-    async def perform_login(self, client: AsyncClient) -> LoginResponse:
+    async def perform_login(self, client: AsyncClient, device_id: str | None = None) -> LoginResponse:
         """Obtain a JWT token and authenticate the Matrix client.
 
         Returns
@@ -123,7 +125,7 @@ class JWTLoginHandler:
 
         if self.login_type in ("com.famedly.login.token.oauth", "com.famedly.login.token"):
             # synapse-token-authenticator: both oauth: and jwt: configs use same payload structure
-            login_body = {
+            login_body: dict[str, Any] = {
                 "type": self.login_type,
                 "identifier": {"type": "m.id.user", "user": self.username},
                 "token": jwt_token,
@@ -135,6 +137,9 @@ class JWTLoginHandler:
                 "token": jwt_token,
                 "initial_device_display_name": "minimatrix",
             }
+
+        if device_id:
+            login_body["device_id"] = device_id
 
         resp = await client.login_raw(login_body)
 

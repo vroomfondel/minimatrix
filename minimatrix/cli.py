@@ -38,6 +38,7 @@ _ENV_MAP: dict[str, str] = {
     "keycloak_client_id": "KEYCLOAK_CLIENT_ID",
     "keycloak_client_secret": "KEYCLOAK_CLIENT_SECRET",
     "jwt_login_type": "JWT_LOGIN_TYPE",
+    "auto_join": "AUTO_JOIN",
 }
 
 logger = glogger.bind(classname="matrix_cli")
@@ -97,6 +98,12 @@ def resolve_config(ns: argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("keycloak_client_id", "")
     cfg.setdefault("keycloak_client_secret", "")
     cfg.setdefault("jwt_login_type", "com.famedly.login.token.oauth")
+    cfg.setdefault("auto_join", False)
+
+    # Normalize auto_join to bool (env vars come in as strings)
+    aj = cfg["auto_join"]
+    if isinstance(aj, str):
+        cfg["auto_join"] = aj.lower() in ("1", "true", "yes")
 
     # Expand ~ in crypto store path
     cfg["crypto_store_path"] = str(Path(cfg["crypto_store_path"]).expanduser())
@@ -131,7 +138,7 @@ async def _create_handler(cfg: dict[str, Any]) -> MatrixClientHandler:
         keycloak_client_secret=cfg.get("keycloak_client_secret") or None,
         jwt_login_type=cfg.get("jwt_login_type") or None,
     )
-    await handler.initial_sync()
+    await handler.initial_sync(auto_join=bool(cfg.get("auto_join")))
     return handler
 
 
@@ -140,18 +147,72 @@ async def _create_handler(cfg: dict[str, Any]) -> MatrixClientHandler:
 # ---------------------------------------------------------------------------
 
 
+def _format_invite(room_id: str, room: Any, handler: MatrixClientHandler) -> str:
+    """Format a single invited room for display."""
+    from datetime import datetime, timezone
+
+    display_name = getattr(room, "display_name", room_id) or room_id
+    inviter = getattr(room, "inviter", None) or "unknown"
+    meta = handler.get_invite_metadata(room_id)
+    kind = "DM" if meta["is_dm"] else "Room"
+    member_count = getattr(room, "member_count", "?")
+    invite_ts = meta["invite_ts"]
+    ts_str = datetime.fromtimestamp(invite_ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M") if invite_ts else "?"
+    return f"  {room_id}  {display_name}  ({kind}, members: {member_count}, invited by {inviter}, at {ts_str})"
+
+
 async def cmd_rooms(cfg: dict[str, Any]) -> None:
-    """List joined rooms."""
+    """List joined rooms and pending invites."""
     handler = await _create_handler(cfg)
     try:
         rooms = handler.rooms
-        if not rooms:
-            print("No joined rooms.")
+        invited = handler.invited_rooms
+        if not rooms and not invited:
+            print("No joined rooms or pending invites.")
             return
-        for room_id, room in rooms.items():
-            display_name = getattr(room, "display_name", room_id) or room_id
-            member_count = getattr(room, "member_count", "?")
-            print(f"{room_id}  {display_name}  (members: {member_count})")
+        if rooms:
+            print("Joined rooms:")
+            for room_id, room in rooms.items():
+                display_name = getattr(room, "display_name", room_id) or room_id
+                member_count = getattr(room, "member_count", "?")
+                print(f"  {room_id}  {display_name}  (members: {member_count})")
+        if invited:
+            print("Pending invites:")
+            for room_id, room in invited.items():
+                print(_format_invite(room_id, room, handler))
+    finally:
+        await handler.close()
+
+
+async def cmd_invites_list(cfg: dict[str, Any]) -> None:
+    """List pending room invitations."""
+    handler = await _create_handler(cfg)
+    try:
+        invited = handler.invited_rooms
+        if not invited:
+            print("No pending invites.")
+            return
+        for room_id, room in invited.items():
+            print(_format_invite(room_id, room, handler))
+    finally:
+        await handler.close()
+
+
+async def cmd_invites_accept(cfg: dict[str, Any], room_id: str) -> None:
+    """Accept a single room invitation."""
+    handler = await _create_handler(cfg)
+    try:
+        invited = handler.invited_rooms
+        if room_id not in invited:
+            logger.error("No pending invite for room {}", room_id)
+            sys.exit(1)
+        room = invited[room_id]
+        meta = handler.get_invite_metadata(room_id)
+        inviter = getattr(room, "inviter", None) or "unknown"
+        kind = "DM" if meta["is_dm"] else "Room"
+        logger.info("Accepting invite to {} {} (invited by {})", kind, room_id, inviter)
+        await handler.join_room(room_id)
+        logger.info("Joined room {}", room_id)
     finally:
         await handler.close()
 
@@ -229,6 +290,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--keycloak-client-secret", dest="keycloak_client_secret", help="Keycloak client secret (for jwt auth)"
     )
     parser.add_argument("--jwt-login-type", dest="jwt_login_type", help="Matrix login type for JWT")
+    parser.add_argument(
+        "--auto-join",
+        dest="auto_join",
+        action="store_true",
+        default=None,
+        help="Automatically accept pending room invitations on startup",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -242,7 +310,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp_listen.add_argument("--room", "-r", required=True, help="Room ID (e.g. !abc:example.com)")
 
     # --- rooms ---
-    subparsers.add_parser("rooms", help="List joined rooms")
+    subparsers.add_parser("rooms", help="List joined rooms and pending invites")
+
+    # --- invites ---
+    sp_invites = subparsers.add_parser("invites", help="Manage room invitations")
+    inv_sub = sp_invites.add_subparsers(dest="invites_command")
+    inv_sub.add_parser("list", help="List pending invitations (default)")
+    sp_inv_accept = inv_sub.add_parser("accept", help="Accept a room invitation")
+    sp_inv_accept.add_argument("--room", "-r", required=True, help="Room ID to accept (e.g. !abc:example.com)")
 
     return parser
 
@@ -276,6 +351,11 @@ def main() -> None:
     try:
         if args.command == "rooms":
             loop.run_until_complete(cmd_rooms(cfg))
+        elif args.command == "invites":
+            if getattr(args, "invites_command", None) == "accept":
+                loop.run_until_complete(cmd_invites_accept(cfg, args.room))
+            else:
+                loop.run_until_complete(cmd_invites_list(cfg))
         elif args.command == "send":
             message = args.message
             if message is None:
