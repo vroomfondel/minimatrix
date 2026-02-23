@@ -462,12 +462,13 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
                 if not cursor_up:
                     sys.stdout.write(f"\r\033[K{prompt}")
                     sys.stdout.flush()
+                    _prompt_on_screen = True
             else:
                 sys.stderr.write(f"\r\033[K{message}")
                 sys.stderr.flush()
                 sys.stdout.write(f"\r\033[K{prompt}")
                 sys.stdout.flush()
-            _prompt_on_screen = True
+                _prompt_on_screen = True
 
     # Swap loguru to prompt-aware sink
     glogger.remove()
@@ -523,14 +524,17 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
     def _input_loop() -> None:
         """Read user input in a dedicated thread and bridge sends to the event loop.
 
-        Uses ``input("")`` with an empty prompt; the visible ``> `` is
-        printed explicitly and coordinated with async output via the
-        ``_prompt_on_screen`` flag.  Typed messages are dispatched to the
-        asyncio event loop via ``asyncio.run_coroutine_threadsafe``.  Typing
-        ``/quit``, pressing Ctrl-D (``EOFError``), or Ctrl-C
-        (``KeyboardInterrupt``) stops the sync loop and terminates the chat
-        session.
+        Polls ``sys.stdin`` via ``select`` with a short timeout so the
+        thread can observe the ``_shutdown`` event and exit promptly on
+        Ctrl-C without needing a final keypress.  The visible ``> ``
+        prompt is printed explicitly and coordinated with async output
+        via the ``_prompt_on_screen`` flag.  Typed messages are dispatched
+        to the asyncio event loop via ``asyncio.run_coroutine_threadsafe``.
+        Typing ``/quit``, pressing Ctrl-D (``EOFError``), or Ctrl-C
+        (``KeyboardInterrupt``) stops the sync loop.
         """
+        import select
+
         nonlocal _prompt_on_screen
         try:
             while not _shutdown.is_set():
@@ -538,19 +542,33 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
                     if not _prompt_on_screen:
                         sys.stdout.write(prompt)
                         sys.stdout.flush()
-                    _prompt_on_screen = False
+                        _prompt_on_screen = True
+                # Poll stdin with a timeout so we can check _shutdown regularly
                 try:
-                    text = input("").strip()
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.5)
+                except (ValueError, OSError):
+                    # stdin closed
+                    break
+                if not ready:
+                    continue
+                try:
+                    line = sys.stdin.readline()
                 except (EOFError, KeyboardInterrupt):
                     handler.stop_sync()
                     break
+                if not line:
+                    # EOF (Ctrl-D)
+                    handler.stop_sync()
+                    break
+                # User pressed Enter — the prompt line is consumed
+                _prompt_on_screen = False
+                text = line.strip()
                 if text == "/quit":
                     handler.stop_sync()
                     break
                 if text:
                     with _lock:
                         glogger.bind(cursor_up=True, sender=f"<{own_user_id}>").log("CHAT", text)
-                        _prompt_on_screen = False
                     asyncio.run_coroutine_threadsafe(handler.send_message(room_id, text), _loop)
         finally:
             handler.stop_sync()
@@ -565,12 +583,6 @@ async def cmd_chat(cfg: dict[str, Any], room_id: str, history_limit: int) -> Non
         pass
     finally:
         _shutdown.set()
-        # Close stdin to unblock the input() call in the reader thread so it
-        # can observe the shutdown flag and exit instead of hanging.
-        try:
-            sys.stdin.close()
-        except OSError:
-            pass
         input_thread.join(timeout=2)
         configure_logging()  # restore normal loguru sink
         await handler.close()
