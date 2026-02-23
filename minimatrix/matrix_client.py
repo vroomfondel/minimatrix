@@ -73,7 +73,8 @@ class MatrixClientHandler:
 
         Args:
             store_path: Directory containing the crypto store ``*.db`` files.
-            user: Full Matrix user ID used to locate the matching database file.
+            user: Matrix user ID (localpart or full ``@user:server``) used to
+                locate the matching database file.
 
         Returns:
             The device ID string if found in the database, or None if no matching
@@ -81,7 +82,12 @@ class MatrixClientHandler:
         """
         import sqlite3
 
-        pattern = os.path.join(store_path, f"{user}_*.db")
+        # nio names DB files using the full Matrix user ID (@user:server_DEVICEID.db).
+        # If only a localpart was provided, use a wildcard for the server part.
+        if user.startswith("@"):
+            pattern = os.path.join(store_path, f"{user}_*.db")
+        else:
+            pattern = os.path.join(store_path, f"@{user}:*_*.db")
         matches = glob.glob(pattern)
         if not matches:
             return None
@@ -89,7 +95,7 @@ class MatrixClientHandler:
         latest = max(matches, key=os.path.getmtime)
         try:
             conn = sqlite3.connect(latest)
-            row = conn.execute("SELECT device_id FROM accounts WHERE user_id = ? LIMIT 1", (user,)).fetchone()
+            row = conn.execute("SELECT device_id FROM accounts LIMIT 1").fetchone()
             conn.close()
             if row and row[0]:
                 return str(row[0])
@@ -593,7 +599,7 @@ class MatrixClientHandler:
             A tuple of (sessions_imported, old_devices_count).
         """
         passphrase = secrets.token_urlsafe(32)
-        user = self._user
+        user = self._client.user_id
         store_path = self._crypto_store_path
         current_device = self._client.device_id
 
