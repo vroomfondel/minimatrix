@@ -682,6 +682,13 @@ class MatrixClientHandler:
                 logger.warning("Failed to process old device {}: {}", old_device_id, exc)
             finally:
                 await tmp_client.close()
+                # nio's close() only closes HTTP — explicitly close the peewee SQLite DB
+                # to release the file descriptor (prevents NFS silly-rename on unlink)
+                if tmp_client.store is not None and hasattr(tmp_client.store, "database"):
+                    try:
+                        tmp_client.store.database.close()
+                    except Exception:
+                        pass
                 if export_path and os.path.exists(export_path):
                     os.unlink(export_path)
 
