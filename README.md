@@ -16,6 +16,7 @@ manage invitations, manage devices, and list joined rooms — all from the comma
 ## Features
 
 - **Send** encrypted messages to Matrix rooms
+- **Send files** — upload and send images, documents, audio, and video with automatic MIME type detection and E2E encryption
 - **Listen** for incoming messages in real-time (prints to stdout)
 - **List** joined rooms with display names and member counts
 - **Manage invites** — list pending invitations (with inviter, type, timestamp) and accept individually
@@ -88,7 +89,22 @@ minimatrix send --room '!abc123:example.com' "Hello from minimatrix!"
 echo "Hello from a pipe" | minimatrix send --room '!abc123:example.com'
 ```
 
-### 5. Listen for messages
+### 5. Send files
+
+```bash
+# Send a single file
+minimatrix send --room '!abc123:example.com' --file /path/to/image.png
+
+# Send multiple files
+minimatrix send --room '!abc123:example.com' -f photo.jpg -f document.pdf
+
+# Send a file with a text message
+minimatrix send --room '!abc123:example.com' --file photo.jpg "Check this out!"
+```
+
+Files are automatically uploaded with the correct MIME type (`m.image`, `m.audio`, `m.video`, or `m.file`) and encrypted for E2E rooms. Image dimensions are included in metadata when Pillow is installed.
+
+### 6. Listen for messages
 
 ```bash
 minimatrix listen --room '!abc123:example.com'
@@ -96,7 +112,7 @@ minimatrix listen --room '!abc123:example.com'
 # Press Ctrl+C to stop
 ```
 
-### 6. Manage devices
+### 7. Manage devices
 
 ```bash
 # List all registered devices
@@ -138,7 +154,7 @@ Configuration is resolved in this order (later overrides earlier):
 | `rooms` | List joined rooms and pending invites |
 | `invites [list]` | List pending room invitations (with inviter, DM/Room type, timestamp) |
 | `invites accept --room ROOM_ID` | Accept a specific room invitation |
-| `send --room ROOM_ID [MESSAGE]` | Send a text message (reads from stdin if message omitted) |
+| `send --room ROOM_ID [--file FILE]... [MESSAGE]` | Send a text message and/or files (reads message from stdin if omitted and no `--file` given) |
 | `listen --room ROOM_ID` | Listen for messages and print to stdout |
 | `devices [list]` | List all devices registered on the homeserver |
 | `devices purge` | Delete all devices except the current one |

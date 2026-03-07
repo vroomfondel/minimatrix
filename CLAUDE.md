@@ -41,8 +41,8 @@ The venv lives at `.venv/` and uses Python 3.14. The Makefile auto-activates it 
 ### Module Responsibilities
 
 - **`__init__.py`** — Version (`__version__`), loguru configuration (`configure_logging()`).
-- **`cli.py`** — CLI entry point (argparse). Subcommands: `send`, `listen`, `rooms`, `invites` (with `list`/`accept` sub-subcommands). Handles config merging (YAML/env/CLI) and the asyncio event loop. Uses `MatrixClientHandler` for all Matrix operations.
-- **`matrix_client.py`** — `MatrixClientHandler` class wrapping `nio.AsyncClient`. Handles login dispatch (password/SSO/JWT), E2E key management, TOFU device trust, encrypted messaging, sync loops. SSO and JWT login handlers are lazily imported.
+- **`cli.py`** — CLI entry point (argparse). Subcommands: `send` (text and/or files via `--file`/`-f`), `listen`, `rooms`, `invites` (with `list`/`accept` sub-subcommands). Handles config merging (YAML/env/CLI) and the asyncio event loop. Uses `MatrixClientHandler` for all Matrix operations.
+- **`matrix_client.py`** — `MatrixClientHandler` class wrapping `nio.AsyncClient`. Handles login dispatch (password/SSO/JWT), E2E key management, TOFU device trust, encrypted text messaging, file uploads (images, documents, audio, video with automatic MIME detection), sync loops. SSO and JWT login handlers are lazily imported.
 - **`config.py`** — `MiniMatrixConfig` frozen dataclass, loaded from env vars via `from_env()`. Currently not used by the CLI (which has its own config resolution in `cli.py`).
 - **`jwt_login.py`** — `JWTLoginHandler`: Keycloak ROPC token acquisition + Matrix JWT login via `login_raw()`. Supports three login types (`com.famedly.login.token.oauth`, `com.famedly.login.token`, `org.matrix.login.jwt`).
 - **`sso_login.py`** — `SSOLoginHandler`: Programmatic Keycloak SSO flow via HTML form parsing. Fragile; JWT auth is preferred.

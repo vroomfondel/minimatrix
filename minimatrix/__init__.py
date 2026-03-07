@@ -4,13 +4,18 @@ This package exposes the ``minimatrix`` console script (entry point
 ``minimatrix.cli:main``) and the supporting ``MatrixClientHandler`` that
 wraps ``matrix-nio[e2e]`` for all Matrix protocol operations.
 
+Capabilities include sending text messages, uploading and sending files
+(images, documents, audio, video) with automatic MIME type detection,
+listening for incoming messages, interactive chat, room and invitation
+management, and device/key management — all with E2E encryption.
+
 Logging is handled exclusively through **loguru**.  The root logger is
 disabled at import time (``glogger.disable(__name__)``) so that library
 consumers are not affected; the CLI entry point explicitly enables it via
 ``configure_logging()`` and ``glogger.enable("minimatrix")``.
 """
 
-__version__ = "0.0.12"
+__version__ = "0.0.13"
 
 import logging
 import os

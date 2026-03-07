@@ -1,7 +1,8 @@
 """MatrixClientHandler — encapsulates Matrix client operations with E2E encryption.
 
 Provides a clean interface for Matrix/Synapse interactions including authentication
-(password, SSO, JWT), TOFU device trust, and encrypted messaging.
+(password, SSO, JWT), TOFU device trust, encrypted text messaging, and file uploads
+(images, documents, audio, video) with automatic MIME type detection.
 """
 
 from __future__ import annotations
@@ -383,6 +384,131 @@ class MatrixClientHandler:
             )
         except Exception as exc:
             logger.error("Failed to send message to {}: {}", room_id, exc)
+
+    @staticmethod
+    def _detect_msgtype(mime: str) -> str:
+        """Map a MIME type to the Matrix message type.
+
+        Args:
+            mime: The MIME type string (e.g. ``"image/png"``).
+
+        Returns:
+            One of ``m.image``, ``m.audio``, ``m.video``, or ``m.file``.
+        """
+        major = mime.split("/")[0]
+        if major == "image":
+            return "m.image"
+        if major == "audio":
+            return "m.audio"
+        if major == "video":
+            return "m.video"
+        return "m.file"
+
+    @staticmethod
+    def _image_dimensions(file_path: Path) -> dict[str, int] | None:
+        """Try to read image width/height using PIL.
+
+        Args:
+            file_path: Path to the image file.
+
+        Returns:
+            A dict ``{"w": …, "h": …}`` or None if PIL is unavailable or the
+            file is not a valid image.
+        """
+        try:
+            from PIL import Image  # type: ignore[import-not-found]
+
+            with Image.open(file_path) as img:
+                w, h = img.size
+            return {"w": w, "h": h}
+        except Exception:
+            return None
+
+    async def send_file(self, room_id: str, file_path: Path, body: str | None = None) -> None:
+        """Upload a file and send it to a room with E2E encryption.
+
+        Args:
+            room_id: The Matrix room ID to send to.
+            file_path: Path to the local file.
+            body: Optional text body / caption. Defaults to the filename.
+
+        Raises:
+            FileNotFoundError: If the file does not exist.
+        """
+        import mimetypes
+
+        from nio import UploadResponse
+
+        if not file_path.is_file():
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        mime, _ = mimetypes.guess_type(str(file_path))
+        if not mime:
+            mime = "application/octet-stream"
+
+        file_stat = file_path.stat()
+        file_size = file_stat.st_size
+        file_name = file_path.name
+        display_body = body or file_name
+
+        # Determine whether the room is encrypted
+        room = self._client.rooms.get(room_id)
+        encrypt = bool(room and room.encrypted)
+
+        logger.info("Uploading {} ({}, {} bytes, encrypt={})", file_name, mime, file_size, encrypt)
+
+        with open(file_path, "r+b") as f:
+            resp, crypto_dict = await self._client.upload(
+                f,
+                content_type=mime,
+                filename=file_name,
+                encrypt=encrypt,
+                filesize=file_size,
+            )
+
+        if not isinstance(resp, UploadResponse):
+            logger.error("Upload failed for {}: {}", file_name, resp)
+            return
+
+        msgtype = self._detect_msgtype(mime)
+
+        content: dict[str, Any] = {
+            "msgtype": msgtype,
+            "body": display_body,
+            "info": {
+                "mimetype": mime,
+                "size": file_size,
+            },
+        }
+
+        if encrypt and crypto_dict:
+            content["file"] = {
+                "url": resp.content_uri,
+                "key": crypto_dict["key"],
+                "iv": crypto_dict["iv"],
+                "hashes": crypto_dict["hashes"],
+                "v": crypto_dict["v"],
+            }
+            content["info"]["mimetype"] = mime
+        else:
+            content["url"] = resp.content_uri
+
+        # Add image dimensions if available
+        if msgtype == "m.image":
+            dims = self._image_dimensions(file_path)
+            if dims:
+                content["info"]["w"] = dims["w"]
+                content["info"]["h"] = dims["h"]
+
+        try:
+            await self._client.room_send(
+                room_id=room_id,
+                message_type="m.room.message",
+                content=content,
+                ignore_unverified_devices=True,
+            )
+        except Exception as exc:
+            logger.error("Failed to send file to {}: {}", room_id, exc)
 
     async def join_room(self, room_id: str) -> None:
         """Join a Matrix room.

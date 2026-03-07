@@ -36,6 +36,7 @@ def test_build_parser_send_with_message() -> None:
     assert args.command == "send"
     assert args.room == "!abc:example.com"
     assert args.message == "Hello"
+    assert args.files is None
 
 
 def test_build_parser_send_without_message() -> None:
@@ -44,6 +45,50 @@ def test_build_parser_send_without_message() -> None:
     args = parser.parse_args(["send", "--room", "!abc:example.com"])
     assert args.command == "send"
     assert args.message is None
+    assert args.files is None
+
+
+def test_build_parser_send_with_file() -> None:
+    """Verifies that 'send' with --file parses the file path."""
+    parser = build_parser()
+    args = parser.parse_args(["send", "--room", "!abc:example.com", "--file", "/tmp/image.png"])
+    assert args.command == "send"
+    assert args.files == ["/tmp/image.png"]
+    assert args.message is None
+
+
+def test_build_parser_send_with_multiple_files() -> None:
+    """Verifies that multiple --file flags accumulate into a list."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "send",
+            "--room",
+            "!abc:example.com",
+            "-f",
+            "/tmp/a.png",
+            "-f",
+            "/tmp/b.pdf",
+        ]
+    )
+    assert args.files == ["/tmp/a.png", "/tmp/b.pdf"]
+
+
+def test_build_parser_send_with_file_and_message() -> None:
+    """Verifies that --file and a positional message can be combined."""
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "send",
+            "--room",
+            "!abc:example.com",
+            "--file",
+            "/tmp/photo.jpg",
+            "Check this out",
+        ]
+    )
+    assert args.files == ["/tmp/photo.jpg"]
+    assert args.message == "Check this out"
 
 
 def test_build_parser_listen() -> None:

@@ -19,6 +19,7 @@ manage invitations, manage devices, and list joined rooms — all from the comma
 ## Features
 
 - **Send** encrypted messages to Matrix rooms
+- **Send files** — upload and send images, documents, audio, and video with automatic MIME type detection and E2E encryption
 - **Listen** for incoming messages in real-time (prints to stdout)
 - **List** joined rooms with display names and member counts
 - **Manage invites** — list pending invitations and accept individually or auto-join on startup
@@ -47,6 +48,10 @@ minimatrix --user myuser --password mypass invites accept --room '!abc:example.c
 
 # Send a message
 minimatrix --user myuser --password mypass send --room '!abc:example.com' "Hello!"
+
+# Send a file (or multiple with repeated -f)
+minimatrix --user myuser --password mypass send --room '!abc:example.com' --file /path/to/image.png
+minimatrix --user myuser --password mypass send --room '!abc:example.com' -f photo.jpg -f doc.pdf "Check these!"
 
 # Listen for messages
 minimatrix --user myuser --password mypass listen --room '!abc:example.com'

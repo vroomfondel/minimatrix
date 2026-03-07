@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone Matrix CLI — send, listen, chat, and list rooms using the MatrixClientHandler.
+"""Standalone Matrix CLI — send messages and files, listen, chat, and list rooms using the MatrixClientHandler.
 
 Config:   ~/.config/minimatrix/config.yaml (optional)
 
@@ -339,19 +339,25 @@ async def cmd_devices_import_keys(cfg: dict[str, Any], delete_old: bool) -> None
         await handler.close()
 
 
-async def cmd_send(cfg: dict[str, Any], room_id: str, message: str) -> None:
-    """Send a text message to a room.
+async def cmd_send(cfg: dict[str, Any], room_id: str, message: str | None, files: list[str] | None) -> None:
+    """Send a text message and/or files to a room.
 
     Args:
         cfg: Resolved configuration dict.
-        room_id: The Matrix room ID to send the message to.
-        message: The plain-text message body.
+        room_id: The Matrix room ID to send to.
+        message: Optional plain-text message body.
+        files: Optional list of file paths to upload and send.
     """
     handler = await _create_handler(cfg)
     try:
         await handler.trust_devices_in_room(room_id)
-        await handler.send_message(room_id, message)
-        logger.info("Message sent to {}", room_id)
+        if message:
+            await handler.send_message(room_id, message)
+            logger.info("Message sent to {}", room_id)
+        for fp in files or []:
+            path = Path(fp)
+            await handler.send_file(room_id, path)
+            logger.info("File sent to {}: {}", room_id, path.name)
     finally:
         await handler.close()
 
@@ -686,8 +692,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # --- send ---
-    sp_send = subparsers.add_parser("send", help="Send a message to a room")
+    sp_send = subparsers.add_parser("send", help="Send a message and/or files to a room")
     sp_send.add_argument("--room", "-r", required=True, help="Room ID (e.g. !abc:example.com)")
+    sp_send.add_argument("--file", "-f", action="append", dest="files", help="File to send (can be repeated)")
     sp_send.add_argument("message", nargs="?", default=None, help="Message text (reads from stdin if omitted)")
 
     # --- listen ---
@@ -770,13 +777,16 @@ def main() -> None:
                 loop.run_until_complete(cmd_invites_list(cfg))
         elif args.command == "send":
             message = args.message
-            if message is None:
+            files = args.files
+            if message is None and not files:
                 if sys.stdin.isatty():
-                    parser.error("No message provided — pass as argument or pipe via stdin")
+                    parser.error(
+                        "No message or --file provided — pass a message as argument, pipe via stdin, or use --file"
+                    )
                 message = sys.stdin.read().strip()
                 if not message:
                     parser.error("Empty message from stdin")
-            loop.run_until_complete(cmd_send(cfg, args.room, message))
+            loop.run_until_complete(cmd_send(cfg, args.room, message, files))
         elif args.command == "listen":
             loop.run_until_complete(cmd_listen(cfg, args.room))
         elif args.command == "chat":
