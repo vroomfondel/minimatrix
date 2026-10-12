@@ -143,10 +143,15 @@ after every login (`minimatrix/cross_signing.py`):
    (mode 0600). Set the same `CROSS_SIGNING_SECRET` on every instance that shares one Matrix account
    (e.g. several pods or a separate crypto store per process) — otherwise the second instance derives a different
    master key and cannot sign.
-2. If the server does not know the master key yet, the keys are uploaded. Synapse accepts the first upload without
-   user-interactive auth (MSC3967). Replacing *existing* keys of the account needs auth a bot cannot provide; a
-   Synapse admin can allow it once via `POST /_synapse/admin/v1/users/<mxid>/_allow_cross_signing_replacement_without_uia`.
-   Note that replacing the keys changes the account's identity: every contact sees "identity changed".
+2. If the server does not know the master key yet, the keys are uploaded. Synapse (>= 1.110) accepts the first upload
+   without user-interactive auth (MSC3967, Matrix spec v1.11); re-uploading identical keys is always allowed.
+   Replacing *existing* keys needs user-interactive auth, which minimatrix does not perform. With password login a
+   client such as Element can complete it; JWT/SSO accounts have no browserless UIA stage, so on such accounts a
+   master key cannot be replaced via the API at all. The Synapse admin endpoint
+   `POST /_synapse/admin/v1/users/<mxid>/_allow_cross_signing_replacement_without_uia` only takes effect when
+   Synapse delegates authentication to MAS (Matrix Authentication Service); on a plain Synapse it has no effect.
+   **Choose `CROSS_SIGNING_SECRET` before the first run and keep it safe.** Replacing the keys changes the account's
+   identity: every contact sees a "digital identity reset" warning and previously verified contacts must re-verify.
 3. The current device is signed with the self-signing key.
 
 The secret *is* the master key — treat it like a password. Failures during login are only logged

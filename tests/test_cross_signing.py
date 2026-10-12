@@ -1,6 +1,7 @@
 """Tests for minimatrix.cross_signing -- key derivation, signing, upload flow, secret storage."""
 
 import asyncio
+import base64
 import json
 import stat
 from pathlib import Path
@@ -8,7 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from olm.utility import ed25519_verify
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from minimatrix import cross_signing as cs
 
@@ -17,11 +18,17 @@ DEVICE = "DEVICEID"
 KEYS = cs.CrossSigningKeys.from_secret("s3cret")
 
 
+def _b64decode(unpadded: str) -> bytes:
+    """Decode unpadded standard base64."""
+    return base64.b64decode(unpadded + "=" * (-len(unpadded) % 4))
+
+
 def _verify(obj: dict[str, Any], key: Any) -> None:
     """Raise unless *obj* carries a valid signature by *key* (canonical JSON, spec style)."""
     sig = obj["signatures"][USER][f"ed25519:{key.public_key}"]
     stripped = {k: v for k, v in obj.items() if k not in ("signatures", "unsigned")}
-    ed25519_verify(key.public_key, cs.canonical_json(stripped), sig)
+    public = Ed25519PublicKey.from_public_bytes(_b64decode(key.public_key))
+    public.verify(_b64decode(sig), cs.canonical_json(stripped).encode("utf-8"))
 
 
 def _device_keys() -> dict[str, Any]:
@@ -73,6 +80,18 @@ def test_keys_are_derived_deterministically_and_distinct() -> None:
     assert other.master.public_key != KEYS.master.public_key
 
 
+def test_keys_match_libolm_known_answers() -> None:
+    """Verifies that keys and signatures equal those python-olm 3.2.16 (PkSigning) produced."""
+    keys = cs.CrossSigningKeys.from_secret("test-secret")
+    assert keys.master.public_key == "tvIJxzDSYteJTE1twoIlzcDmTOkOBnRSwGJPIYTi254"
+    assert keys.self_signing.public_key == "TZf77+HxLtQ79OV12Yiv2MGzUsBTUWUnMq3oDPhXpIw"
+    assert keys.user_signing.public_key == "zh4Vw08Ww1MC9Qqh1DwnNd+SnrgLe0RKiebH3Mel+80"
+    assert keys.master.sign('{"a":1}') == (
+        "/dhbxpEk90Qb405ieNPuUP5CigGcwCkjmDQ0lzK4XRu8S6w/jFyHP+bSfATBMAhf6nwk+W8WfAoPrLRgWvVpDw"
+    )
+    assert cs.SigningKey(bytes(range(32))).public_key == "A6EHv/POEL4dcN0Y50vAmWfk1jCbpQ1fHdyGZBJVMbg"
+
+
 def test_canonical_json_is_sorted_and_compact() -> None:
     assert cs.canonical_json({"b": 1, "a": {"d": "ä", "c": [1, 2]}}) == '{"a":{"c":[1,2],"d":"ä"},"b":1}'
 
@@ -116,7 +135,7 @@ def test_known_master_signs_only_the_new_device() -> None:
     assert client.paths() == ["keys/query", "keys/signatures/upload"]
 
 
-def test_foreign_master_needs_admin_permission() -> None:
+def test_foreign_master_raises_with_replacement_options() -> None:
     client = FakeClient({"keys/query": _query("FOREIGN"), "keys/device_signing/upload": (401, {"flows": []})})
     with pytest.raises(cs.CrossSigningError) as exc:
         asyncio.run(cs.ensure_device_cross_signed(client, "s3cret"))
@@ -124,8 +143,8 @@ def test_foreign_master_needs_admin_permission() -> None:
     assert "FOREIGN" in message
     assert "--no-self-sign-keys" in message and "SELF_SIGN_KEYS=false" in message
     assert "CROSS_SIGNING_SECRET" in message
-    assert "_allow_cross_signing_replacement_without_uia" in message
-    assert "identity changed" in message
+    assert "_allow_cross_signing_replacement_without_uia" in message and "MAS" in message
+    assert "digital identity reset" in message
     assert "keys/signatures/upload" not in client.paths()
 
 

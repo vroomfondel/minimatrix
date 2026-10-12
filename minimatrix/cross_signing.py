@@ -12,10 +12,14 @@ the minimum by hand:
    log or commit it.  By default it lives in the crypto store
    (see :func:`load_or_create_secret`).
 2. If the server does not know this master key yet, the keys are uploaded
-   (``/keys/device_signing/upload``).  Synapse accepts the *first* upload
-   without user-interactive auth (MSC3967); replacing existing keys of the
-   account needs auth a bot cannot provide -- then a server admin must allow it
-   once (``_allow_cross_signing_replacement_without_uia``).
+   (``/keys/device_signing/upload``).  Synapse (>= 1.110) accepts the *first*
+   upload without user-interactive auth (MSC3967), and re-uploading identical
+   keys is always allowed.  Replacing *existing* keys needs UIA: with password
+   login a client could answer it, with JWT/SSO accounts there is no
+   browserless stage.  The admin endpoint
+   ``_allow_cross_signing_replacement_without_uia`` only takes effect when
+   Synapse delegates auth to MAS (Matrix Authentication Service); on a plain
+   Synapse it does nothing.  Pick the secret before the first run and keep it.
 3. The current device is signed with the self-signing key
    (``/keys/signatures/upload``), unless it already is.
 
@@ -24,6 +28,7 @@ their canonical JSON (sorted keys, no whitespace, without ``signatures`` /
 ``unsigned``) with ed25519, as the spec requires.
 """
 
+import base64
 import copy
 import hashlib
 import hmac
@@ -34,9 +39,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from loguru import logger as glogger
 from nio import AsyncClient
-from olm.pk import PkSigning
 
 logger = glogger.bind(classname="cross_signing")
 
@@ -54,6 +60,34 @@ class CrossSigningError(Exception):
     """Cross-signing could not be set up (the client keeps working without it)."""
 
 
+def _unpadded_b64(data: bytes) -> str:
+    """Encode *data* as unpadded standard base64 (the Matrix key/signature encoding)."""
+    return base64.b64encode(data).decode("ascii").rstrip("=")
+
+
+class SigningKey:
+    """An ed25519 signing key built from a 32-byte seed.
+
+    Drop-in for the part of libolm's ``PkSigning`` this module used: the seed is
+    the ed25519 private seed (as in libsodium), so the same seed yields the same
+    public key and -- ed25519 being deterministic -- the same signatures.
+    """
+
+    def __init__(self, seed: bytes) -> None:
+        """Create the key from *seed* (32 bytes)."""
+        self._key = Ed25519PrivateKey.from_private_bytes(seed)
+        self._public_key = _unpadded_b64(self._key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
+
+    @property
+    def public_key(self) -> str:
+        """The raw public key as unpadded base64."""
+        return self._public_key
+
+    def sign(self, message: str) -> str:
+        """Sign the UTF-8 bytes of *message*; return the signature as unpadded base64."""
+        return _unpadded_b64(self._key.sign(message.encode("utf-8")))
+
+
 @dataclass(frozen=True)
 class CrossSigningKeys:
     """The account's three cross-signing key pairs.
@@ -64,9 +98,9 @@ class CrossSigningKeys:
         user_signing: Signs other users' master keys (uploaded, not used).
     """
 
-    master: PkSigning
-    self_signing: PkSigning
-    user_signing: PkSigning
+    master: SigningKey
+    self_signing: SigningKey
+    user_signing: SigningKey
 
     @classmethod
     def from_secret(cls, secret: str, seed_info: str = DEFAULT_SEED_INFO) -> "CrossSigningKeys":
@@ -89,9 +123,9 @@ class CrossSigningKeys:
         if not secret:
             raise ValueError("cross-signing secret must not be empty")
 
-        def _key(usage: str) -> PkSigning:
+        def _key(usage: str) -> SigningKey:
             seed = hmac.new(secret.encode(), seed_info.format(usage=usage).encode(), hashlib.sha256).digest()
-            return PkSigning(seed)
+            return SigningKey(seed)
 
         return cls(master=_key("master"), self_signing=_key("self_signing"), user_signing=_key("user_signing"))
 
@@ -133,7 +167,7 @@ def canonical_json(obj: JsonDict) -> str:
     return json.dumps(obj, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
 
 
-def sign_json(obj: JsonDict, key: PkSigning, user_id: str) -> JsonDict:
+def sign_json(obj: JsonDict, key: SigningKey, user_id: str) -> JsonDict:
     """Return a copy of *obj* with *key*'s signature added.
 
     The signature covers the canonical JSON without ``signatures`` and
@@ -158,7 +192,7 @@ def sign_json(obj: JsonDict, key: PkSigning, user_id: str) -> JsonDict:
     return signed
 
 
-def _key_object(key: PkSigning, user_id: str, usage: str) -> JsonDict:
+def _key_object(key: SigningKey, user_id: str, usage: str) -> JsonDict:
     """Build the unsigned cross-signing key object for *key* with the given *usage*."""
     return {"user_id": user_id, "usage": [usage], "keys": {f"ed25519:{key.public_key}": key.public_key}}
 
@@ -258,12 +292,14 @@ async def ensure_device_cross_signed(client: AsyncClient, secret: str, seed_info
         if status == 401:
             raise CrossSigningError(
                 f"{user_id} already has different cross-signing keys (master {server_master}). Replacing them needs "
-                "user-interactive auth, which a bot cannot provide. Options: (a) disable self-signing "
-                "(--no-self-sign-keys / SELF_SIGN_KEYS=false); (b) use the same CROSS_SIGNING_SECRET as the instance "
-                "that already set up the account; (c) once, as Synapse admin, allow the replacement: POST "
-                f"/_synapse/admin/v1/users/{user_id}/_allow_cross_signing_replacement_without_uia. Note that "
-                "replacing the keys changes the account's identity, so other clients and contacts will see "
-                "'identity changed'."
+                "user-interactive auth, which this client does not perform (and JWT/SSO accounts have no "
+                "browserless UIA stage). Options: (a) disable self-signing (--no-self-sign-keys / "
+                "SELF_SIGN_KEYS=false); (b) use the same CROSS_SIGNING_SECRET as the instance that already set up "
+                "the account; (c) reset the identity from a client that can complete UIA (password login), or, if "
+                "Synapse delegates auth to MAS, have an admin call "
+                f"/_synapse/admin/v1/users/{user_id}/_allow_cross_signing_replacement_without_uia first. Note "
+                "that replacing the keys changes the account's identity, so other clients and contacts will see "
+                "a 'digital identity reset' warning."
             )
         if status != 200:
             raise CrossSigningError(f"Cross-signing key upload failed ({status}): {resp}")
