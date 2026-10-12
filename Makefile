@@ -68,6 +68,18 @@ VENV_DEPS := requirements.txt requirements-dev.txt requirements-build.txt
 
 VERSION := $(shell $(venv_activated) > /dev/null 2>&1 && hatch version 2>/dev/null || echo HATCH_NOT_FOUND)
 
+# Fail loudly instead of letting distcheck bless whatever stale artifact sits in
+# dist/. Only enforced for the build/publish goals so that `make install` still
+# works on a machine without hatch. Typical cause: hatch's isolated build env
+# (~/.local/share/hatch/env/virtual/minimatrix/*/hatch-build) was created with a
+# Python that has since been upgraded — delete that directory and retry.
+VERSION_GOALS := distcheck pypibuild pypipush
+ifneq (,$(filter $(VERSION_GOALS),$(MAKECMDGOALS)))
+ifeq ($(VERSION),HATCH_NOT_FOUND)
+$(error 'hatch version' failed — run '.venv/bin/hatch version' to see why (stale hatch-build env?) before building)
+endif
+endif
+
 dist/minimatrix-$(VERSION).tar.gz dist/minimatrix-$(VERSION)-py3-none-any.whl dist/.touchfile: $(PKG_SOURCES) $(VENV_DEPS) pyproject.toml
 	@printf "VERSION: $(VERSION)\n"
 	@$(venv_activated)
