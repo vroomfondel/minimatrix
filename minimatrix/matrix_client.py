@@ -17,6 +17,7 @@ import secrets
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,23 @@ logger = glogger.bind(classname="MatrixClientHandler")
 
 class MessageSendError(Exception):
     """Raised by strict ``send_message``/``send_file`` calls when the message could not be sent."""
+
+
+@dataclass(frozen=True)
+class TrustResult:
+    """Outcome of :meth:`MatrixClientHandler.trust_devices_for_user` for one user.
+
+    Attributes:
+        user_id: The user whose devices were processed.
+        known: Device IDs of all non-deleted devices of the user.
+        trusted: The subset of ``known`` that is verified after the call.
+        newly_trusted: The subset of ``trusted`` that was verified by this call.
+    """
+
+    user_id: str
+    known: tuple[str, ...]
+    trusted: tuple[str, ...]
+    newly_trusted: tuple[str, ...]
 
 
 class MatrixClientHandler:
@@ -390,14 +408,14 @@ class MatrixClientHandler:
 
     # -- E2E Device Trust (TOFU) -----------------------------------------------
 
-    async def trust_devices_for_user(self, user_id: str) -> int:
+    async def trust_devices_for_user(self, user_id: str) -> TrustResult:
         """Auto-trust all non-deleted devices of a given user (TOFU).
 
         Args:
             user_id: The fully-qualified Matrix user ID whose devices to trust.
 
         Returns:
-            The number of devices that were newly verified.
+            A :class:`TrustResult` listing the user's known, trusted and newly trusted devices.
         """
         if self._client.olm:
             self._client.olm.users_for_key_query.add(user_id)
@@ -408,15 +426,20 @@ class MatrixClientHandler:
         # nio's DeviceStore has no __contains__ and iterates OlmDevices, so a
         # ``user_id in device_store`` check is always False. active_user_devices()
         # yields nothing for unknown users and already skips deleted devices.
-        trusted = 0
+        known: list[str] = []
+        trusted: list[str] = []
+        newly_trusted: list[str] = []
         for olm_device in self._client.device_store.active_user_devices(user_id):
-            if not self._client.is_device_verified(olm_device):
+            known.append(olm_device.id)
+            if not olm_device.verified:
                 logger.info("Trusting device {} of {}", olm_device.id, user_id)
                 self._client.verify_device(olm_device)
-                trusted += 1
-        return trusted
+                newly_trusted.append(olm_device.id)
+            if olm_device.verified:
+                trusted.append(olm_device.id)
+        return TrustResult(user_id, tuple(known), tuple(trusted), tuple(newly_trusted))
 
-    async def trust_all_allowed_devices(self, allowed_users: Sequence[str]) -> int:
+    async def trust_all_allowed_devices(self, allowed_users: Sequence[str]) -> list[TrustResult]:
         """Trust devices of all allowed users.
 
         Args:
@@ -424,31 +447,24 @@ class MatrixClientHandler:
                 should be trusted.
 
         Returns:
-            The total number of devices that were newly verified.
+            One :class:`TrustResult` per user, in the given order.
         """
-        trusted = 0
-        for user_id in allowed_users:
-            trusted += await self.trust_devices_for_user(user_id)
-        return trusted
+        return [await self.trust_devices_for_user(user_id) for user_id in allowed_users]
 
-    async def trust_devices_in_room(self, room_id: str) -> int:
+    async def trust_devices_in_room(self, room_id: str) -> list[TrustResult]:
         """Trust all devices of all members in a room (TOFU).
 
         Args:
             room_id: The Matrix room ID whose members' devices should be trusted.
 
         Returns:
-            The total number of devices that were newly verified.
+            One :class:`TrustResult` per member other than ourselves (empty if the room
+            is unknown).
         """
         room = self._client.rooms.get(room_id)
         if not room:
-            return 0
-        trusted = 0
-        for user_id in room.users:
-            if user_id == self._client.user_id:
-                continue
-            trusted += await self.trust_devices_for_user(user_id)
-        return trusted
+            return []
+        return [await self.trust_devices_for_user(user_id) for user_id in room.users if user_id != self._client.user_id]
 
     # -- Messaging -------------------------------------------------------------
 

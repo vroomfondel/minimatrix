@@ -9,10 +9,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from nio import JoinResponse, LocalProtocolError, RoomSendError, RoomSendResponse
+from nio import AsyncClient, JoinResponse, LocalProtocolError, RoomSendError, RoomSendResponse
 from nio.crypto.device import DeviceStore, OlmDevice, TrustState
 
-from minimatrix.matrix_client import MatrixClientHandler, MessageSendError
+from minimatrix.matrix_client import MatrixClientHandler, MessageSendError, TrustResult
 
 
 def make_handler(tmp_path: Path | None = None) -> MatrixClientHandler:
@@ -321,57 +321,57 @@ class TestEnsureCrossSigned:
 
 
 # ---------------------------------------------------------------------------
-# TOFU device trust — uses a real nio DeviceStore (a dict fake would have
-# __contains__ and hide the "user_id in device_store" bug)
+# TOFU device trust — real nio AsyncClient (store/olm loaded from tmp_path) and a
+# real DeviceStore/OlmDevice; only keys_query (network) is mocked. Fakes that invent
+# client methods (is_device_verified) or a dict device store hid two bugs here.
 # ---------------------------------------------------------------------------
 
 
 class TestTrustDevices:
     USER = "@alice:example.com"
+    BOT = "@bot:example.com"
 
-    @staticmethod
-    def trust_handler(*devices: OlmDevice) -> MatrixClientHandler:
-        h = make_handler()
-        store = DeviceStore()
+    def trust_handler(self, tmp_path: Path, *devices: OlmDevice) -> MatrixClientHandler:
+        client = AsyncClient("http://hs.invalid", self.BOT, device_id="BOTDEV", store_path=str(tmp_path))
+        client.user_id = self.BOT
+        client.load_store()
         for device in devices:
-            store.add(device)
-        h._client.device_store = store
-        h._client.olm = None
-        h._client.keys_query = AsyncMock()
-        h._client.is_device_verified = MagicMock(side_effect=lambda d: d.verified)
-        h._client.verify_device = MagicMock(side_effect=lambda d: setattr(d, "trust_state", TrustState.verified))
+            client.device_store.add(device)
+        client.keys_query = AsyncMock(side_effect=LocalProtocolError("No key query required."))
+        h = make_handler(tmp_path)
+        h._client = client
         return h
 
-    def device(self, device_id: str, *, deleted: bool = False) -> OlmDevice:
-        return OlmDevice(self.USER, device_id, {"ed25519": f"ed-{device_id}"}, deleted=deleted)
+    def device(self, device_id: str, *, user_id: str = USER, deleted: bool = False) -> OlmDevice:
+        keys = {"ed25519": f"ed-{device_id}", "curve25519": f"cu-{device_id}"}
+        return OlmDevice(user_id, device_id, keys, deleted=deleted)
 
-    def test_unknown_user_is_noop(self) -> None:
-        h = self.trust_handler()
-        assert asyncio.run(h.trust_devices_for_user("@nobody:example.com")) == 0
-        h._client.verify_device.assert_not_called()
+    def test_unknown_user_is_noop(self, tmp_path: Path) -> None:
+        h = self.trust_handler(tmp_path, self.device("A"))
+        result = asyncio.run(h.trust_devices_for_user("@nobody:example.com"))
+        assert result == TrustResult("@nobody:example.com", (), (), ())
 
-    def test_unverified_devices_get_verified(self) -> None:
-        a, b = self.device("A"), self.device("B")
-        h = self.trust_handler(a, b)
-        assert asyncio.run(h.trust_devices_for_user(self.USER)) == 2
-        assert a.verified and b.verified
-
-    def test_deleted_device_is_skipped(self) -> None:
-        live, gone = self.device("LIVE"), self.device("GONE", deleted=True)
-        h = self.trust_handler(live, gone)
-        assert asyncio.run(h.trust_devices_for_user(self.USER)) == 1
-        assert live.verified
-        assert not gone.verified
-
-    def test_already_verified_device_not_counted(self) -> None:
-        known = self.device("KNOWN")
+    def test_mixed_devices(self, tmp_path: Path) -> None:
+        a, b, known, gone = self.device("A"), self.device("B"), self.device("KNOWN"), self.device("GONE", deleted=True)
         known.trust_state = TrustState.verified
-        h = self.trust_handler(known)
-        assert asyncio.run(h.trust_devices_for_user(self.USER)) == 0
-        h._client.verify_device.assert_not_called()
+        h = self.trust_handler(tmp_path, a, b, known, gone)
+        result = asyncio.run(h.trust_devices_for_user(self.USER))
+        assert set(result.known) == {"A", "B", "KNOWN"}
+        assert set(result.trusted) == {"A", "B", "KNOWN"}
+        assert set(result.newly_trusted) == {"A", "B"}
+        assert a.verified and b.verified
+        assert not gone.verified
+        # trust is persisted by nio's store, a second run trusts nothing new
+        assert asyncio.run(h.trust_devices_for_user(self.USER)).newly_trusted == ()
 
-    def test_room_sums_members_and_skips_self(self) -> None:
-        h = self.trust_handler(self.device("A"), OlmDevice("@bot:example.com", "ME", {}))
-        h._client.user_id = "@bot:example.com"
-        h._client.rooms = {"!r:x": MagicMock(users={self.USER: None, "@bot:example.com": None})}
-        assert asyncio.run(h.trust_devices_in_room("!r:x")) == 1
+    def test_room_skips_self(self, tmp_path: Path) -> None:
+        h = self.trust_handler(tmp_path, self.device("A"), self.device("OTHER", user_id=self.BOT))
+        h._client.rooms = {"!r:x": MagicMock(users={self.USER: None, self.BOT: None})}
+        results = asyncio.run(h.trust_devices_in_room("!r:x"))
+        assert results == [TrustResult(self.USER, ("A",), ("A",), ("A",))]
+        assert asyncio.run(h.trust_devices_in_room("!unknown:x")) == []
+
+    def test_all_allowed_devices(self, tmp_path: Path) -> None:
+        h = self.trust_handler(tmp_path, self.device("A"))
+        results = asyncio.run(h.trust_all_allowed_devices([self.USER, "@nobody:example.com"]))
+        assert [r.newly_trusted for r in results] == [("A",), ()]
