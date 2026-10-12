@@ -2,7 +2,10 @@
 
 Provides a clean interface for Matrix/Synapse interactions including authentication
 (password, SSO, JWT), TOFU device trust, encrypted text messaging, and file uploads
-(images, documents, audio, video) with automatic MIME type detection.
+(images, documents, audio, video) with automatic MIME type detection. Text messages can
+carry an HTML ``formatted_body``. After login the device can optionally be cross-signed
+(self-signing, see :mod:`minimatrix.cross_signing`) so that its messages are not shown as
+sent from an unverified device.
 """
 
 from __future__ import annotations
@@ -23,14 +26,25 @@ from nio import (
     AsyncClientConfig,
     LocalProtocolError,
     LoginResponse,
+    RoomSendError,
+    RoomSendResponse,
     SyncResponse,
 )
 
 logger = glogger.bind(classname="MatrixClientHandler")
 
 
+class MessageSendError(Exception):
+    """Raised by strict ``send_message``/``send_file`` calls when the message could not be sent."""
+
+
 class MatrixClientHandler:
-    """Encapsulates Matrix client operations with E2E encryption and TOFU device trust."""
+    """Encapsulates Matrix client operations with E2E encryption and TOFU device trust.
+
+    Supports plain and HTML-formatted (``formatted_body``) text messages, file uploads, a
+    resilient sync loop, and optional cross-signing of the own device after login
+    (``self_sign_keys``) via :meth:`ensure_cross_signed`.
+    """
 
     def __init__(self, homeserver: str, user: str, crypto_store_path: str) -> None:
         """Create a Matrix client with E2E encryption support.
@@ -48,6 +62,7 @@ class MatrixClientHandler:
         # (after leave) replaces the previous one in Synapse's state, so a simple
         # room_id -> metadata dict is sufficient.
         self._invite_metadata: dict[str, dict[str, Any]] = {}  # room_id -> {is_dm, invite_ts}
+        self._stop_requested = False
 
         os.makedirs(crypto_store_path, exist_ok=True)
 
@@ -198,8 +213,11 @@ class MatrixClientHandler:
         keycloak_client_id: str | None = None,
         keycloak_client_secret: str | None = None,
         jwt_login_type: str | None = None,
+        *,
+        self_sign_keys: bool,
+        cross_signing_secret: str | None = None,
     ) -> None:
-        """Log in to the Matrix homeserver and upload device keys.
+        """Log in to the Matrix homeserver, upload device keys and optionally self-sign.
 
         Args:
             auth_method: One of ``"password"``, ``"sso"``, or ``"jwt"``.
@@ -212,11 +230,69 @@ class MatrixClientHandler:
                 clients).
             jwt_login_type: Matrix login type for JWT auth (default:
                 ``"com.famedly.login.token.oauth"``).
+            self_sign_keys: Whether to cross-sign this device after login. Required
+                (keyword-only) so callers decide explicitly. Failures are logged and do
+                not abort the login.
+            cross_signing_secret: Secret for deriving the cross-signing keys. If None,
+                a secret is loaded from (or created in) the crypto store.
         """
-        # Try restoring a cached session first
-        if await self._try_restore_login():
-            return
+        # Try restoring a cached session first; otherwise perform a fresh login
+        if not await self._try_restore_login():
+            await self._fresh_login(
+                auth_method,
+                password,
+                sso_idp_id,
+                keycloak_url,
+                keycloak_realm,
+                keycloak_client_id,
+                keycloak_client_secret,
+                jwt_login_type,
+            )
 
+        if self._client.should_upload_keys:
+            logger.info("Uploading device keys ...")
+            await self._client.keys_upload()
+
+        if self_sign_keys:
+            try:
+                await self.ensure_cross_signed(cross_signing_secret)
+            except Exception as exc:
+                logger.error("Cross-signing failed (messages will show as sent from an unverified device): {}", exc)
+        else:
+            logger.debug("Self-signing disabled")
+
+    async def ensure_cross_signed(self, secret: str | None = None) -> str:
+        """Make sure the current device is cross-signed.
+
+        Args:
+            secret: Secret for deriving the cross-signing keys. If None, it is loaded
+                from (or created in) the crypto store.
+
+        Returns:
+            A human-readable summary of what was done.
+
+        Raises:
+            CrossSigningError: If cross-signing could not be set up.
+        """
+        from minimatrix.cross_signing import ensure_device_cross_signed, load_or_create_secret
+
+        secret = secret or load_or_create_secret(self._crypto_store_path)
+        if self._client.should_upload_keys:
+            await self._client.keys_upload()
+        return await ensure_device_cross_signed(self._client, secret)
+
+    async def _fresh_login(
+        self,
+        auth_method: str,
+        password: str,
+        sso_idp_id: str | None,
+        keycloak_url: str | None,
+        keycloak_realm: str | None,
+        keycloak_client_id: str | None,
+        keycloak_client_secret: str | None,
+        jwt_login_type: str | None,
+    ) -> None:
+        """Perform a full login (no cached session) and cache the resulting token."""
         login_info = f"method={auth_method}"
         if auth_method == "jwt":
             login_info += f", login_type={jwt_login_type}"
@@ -248,10 +324,6 @@ class MatrixClientHandler:
             sys.exit(1)
 
         self._save_token()
-
-        if self._client.should_upload_keys:
-            logger.info("Uploading device keys ...")
-            await self._client.keys_upload()
 
     async def _login_sso(self, idp_id: str, password: str) -> LoginResponse:
         """Perform SSO login via Keycloak.
@@ -364,26 +436,53 @@ class MatrixClientHandler:
 
     # -- Messaging -------------------------------------------------------------
 
-    async def send_message(self, room_id: str, text: str) -> None:
+    async def send_message(self, room_id: str, text: str, *, html: str | None = None, strict: bool = False) -> bool:
         """Send a text message to a room with E2E encryption.
 
         Args:
             room_id: The Matrix room ID to send to.
-            text: The message body.
+            text: The plain-text message body.
+            html: Optional HTML version, sent as ``formatted_body``.
+            strict: If True, raise :class:`MessageSendError` on failure instead of
+                only logging it.
+
+        Returns:
+            True if the message was sent, False otherwise.
+
+        Raises:
+            MessageSendError: If ``strict`` is True and sending failed.
 
         Note:
             Uses ``ignore_unverified_devices=True`` as a safety net against race
             conditions where a device appears between the trust loop and the send.
         """
+        content: dict[str, Any] = {"msgtype": "m.text", "body": text}
+        if html is not None:
+            content["format"] = "org.matrix.custom.html"
+            content["formatted_body"] = html
+        return await self._room_send(room_id, content, strict=strict, what="message")
+
+    async def _room_send(self, room_id: str, content: dict[str, Any], *, strict: bool, what: str) -> bool:
+        """Send ``content`` as ``m.room.message`` and map failures to the bool/strict contract."""
         try:
-            await self._client.room_send(
+            resp = await self._client.room_send(
                 room_id=room_id,
                 message_type="m.room.message",
-                content={"msgtype": "m.text", "body": text},
+                content=content,
                 ignore_unverified_devices=True,
             )
         except Exception as exc:
-            logger.error("Failed to send message to {}: {}", room_id, exc)
+            logger.error("Failed to send {} to {}: {}", what, room_id, exc)
+            if strict:
+                raise MessageSendError(f"Failed to send {what} to {room_id}: {exc}") from exc
+            return False
+        if isinstance(resp, RoomSendResponse):
+            return True
+        logger.error("Failed to send {} to {}: {}", what, room_id, resp)
+        if strict:
+            detail = resp.message if isinstance(resp, RoomSendError) else resp
+            raise MessageSendError(f"Failed to send {what} to {room_id}: {detail}")
+        return False
 
     @staticmethod
     def _detect_msgtype(mime: str) -> str:
@@ -424,16 +523,22 @@ class MatrixClientHandler:
         except Exception:
             return None
 
-    async def send_file(self, room_id: str, file_path: Path, body: str | None = None) -> None:
+    async def send_file(self, room_id: str, file_path: Path, body: str | None = None, *, strict: bool = False) -> bool:
         """Upload a file and send it to a room with E2E encryption.
 
         Args:
             room_id: The Matrix room ID to send to.
             file_path: Path to the local file.
             body: Optional text body / caption. Defaults to the filename.
+            strict: If True, raise :class:`MessageSendError` on upload or send failure
+                instead of only logging it.
+
+        Returns:
+            True if the file was uploaded and sent, False otherwise.
 
         Raises:
             FileNotFoundError: If the file does not exist.
+            MessageSendError: If ``strict`` is True and the upload or send failed.
         """
         import mimetypes
 
@@ -468,7 +573,9 @@ class MatrixClientHandler:
 
         if not isinstance(resp, UploadResponse):
             logger.error("Upload failed for {}: {}", file_name, resp)
-            return
+            if strict:
+                raise MessageSendError(f"Upload failed for {file_name}: {resp}")
+            return False
 
         msgtype = self._detect_msgtype(mime)
 
@@ -500,33 +607,35 @@ class MatrixClientHandler:
                 content["info"]["w"] = dims["w"]
                 content["info"]["h"] = dims["h"]
 
-        try:
-            await self._client.room_send(
-                room_id=room_id,
-                message_type="m.room.message",
-                content=content,
-                ignore_unverified_devices=True,
-            )
-        except Exception as exc:
-            logger.error("Failed to send file to {}: {}", room_id, exc)
+        return await self._room_send(room_id, content, strict=strict, what="file")
 
-    async def join_room(self, room_id: str) -> None:
-        """Join a Matrix room.
+    async def join_room(self, room_spec: str) -> str:
+        """Join a Matrix room by ID or alias.
 
         Args:
-            room_id: The Matrix room ID to join.
+            room_spec: A room ID (``!id:server``) or room alias (``#alias:server``).
+
+        Returns:
+            The resolved room ID.
 
         Raises:
             RuntimeError: If the homeserver returns an error response.
         """
         from nio import JoinResponse
 
-        resp = await self._client.join(room_id)
+        if room_spec.startswith("!"):
+            if room_spec in self._client.rooms:
+                logger.debug("Already joined {}", room_spec)
+                return room_spec
+        elif not room_spec.startswith("#"):
+            logger.warning("Unrecognised room spec {} (expected !id:server or #alias:server), trying anyway", room_spec)
+
+        resp = await self._client.join(room_spec)
         if isinstance(resp, JoinResponse):
-            logger.info("Joined room {}", room_id)
-        else:
-            logger.error("Failed to join room {}: {}", room_id, resp)
-            raise RuntimeError(f"Failed to join room {room_id}: {resp}")
+            logger.info("Joined room {} ({})", room_spec, resp.room_id)
+            return str(resp.room_id)
+        logger.error("Failed to join room {}: {}", room_spec, resp)
+        raise RuntimeError(f"Failed to join room {room_spec}: {resp}")
 
     # -- Callback registration -------------------------------------------------
 
@@ -672,16 +781,35 @@ class MatrixClientHandler:
         return messages
 
     async def sync_forever(self, timeout: int = 30000) -> None:
-        """Run the sync loop indefinitely.
+        """Run the sync loop until :meth:`stop_sync` is called.
+
+        nio's ``sync_forever`` schedules a ``keys_query()`` task whenever
+        ``should_query_keys`` is set. If our own ``keys_query`` (see
+        :meth:`trust_devices_for_user`) runs concurrently and consumes the pending
+        users first, nio's task finds an empty list and raises
+        ``LocalProtocolError("No key query required.")``, which would terminate
+        ``sync_forever`` entirely. This race is harmless, so it is logged at DEBUG and
+        the sync loop is restarted. Other ``LocalProtocolError`` instances propagate.
 
         Args:
             timeout: Sync timeout in milliseconds.
         """
+        self._stop_requested = False
         logger.info("Listening for commands ...")
-        await self._client.sync_forever(timeout=timeout)
+        while True:
+            try:
+                await self._client.sync_forever(timeout=timeout)
+                return
+            except LocalProtocolError as exc:
+                if "No key query required" not in str(exc):
+                    raise
+                if self._stop_requested:
+                    return
+                logger.debug("Ignoring nio key-query race ({}), resuming sync", exc)
 
     def stop_sync(self) -> None:
         """Stop the running sync_forever loop."""
+        self._stop_requested = True
         self._client.stop_sync_forever()
 
     # -- Device management -----------------------------------------------------

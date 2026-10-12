@@ -25,6 +25,8 @@ manage invitations, manage devices, and list joined rooms — all from the comma
 - **Session caching** — persists Matrix access tokens to avoid re-authentication on every run
 - **E2E encryption** via matrix-nio with persistent crypto store and device reuse
 - **TOFU device trust** — automatically trusts all devices in a room
+- **Self-signing (cross-signing)** — signs its own device with the account's cross-signing keys after login, so Element and friends stop flagging its messages with a red "!" (on by default, see below)
+- **HTML messages** — optional `formatted_body` next to the plain text (`send --html`)
 - **Multiple auth methods**: password, SSO, or JWT via Keycloak (ROPC + JWKS)
 - **Flexible config**: YAML file, environment variables, and CLI args (in ascending priority)
 - Structured logging via loguru
@@ -125,7 +127,36 @@ minimatrix devices import-keys --delete-old-stores
 
 # Purge all devices except the current one
 minimatrix devices purge
+
+# Cross-sign this device explicitly (fails loudly, exit 1, unlike the implicit signing at login)
+minimatrix devices cross-sign
 ```
+
+### 8. Self-signing / cross-signing
+
+A device nobody vouches for is flagged by Element as *"encrypted by a device not verified by its owner"*
+(red "!" on every message). matrix-nio has no cross-signing support, so minimatrix does the minimum itself
+after every login (`minimatrix/cross_signing.py`):
+
+1. The three cross-signing keys (master, self-signing, user-signing) are derived deterministically from one secret.
+   Without `CROSS_SIGNING_SECRET` a random secret is generated once and kept in `<crypto_store_path>/cross_signing_secret`
+   (mode 0600). Set the same `CROSS_SIGNING_SECRET` on every instance that shares one Matrix account
+   (e.g. several pods or a separate crypto store per process) — otherwise the second instance derives a different
+   master key and cannot sign.
+2. If the server does not know the master key yet, the keys are uploaded. Synapse accepts the first upload without
+   user-interactive auth (MSC3967). Replacing *existing* keys of the account needs auth a bot cannot provide; a
+   Synapse admin can allow it once via `POST /_synapse/admin/v1/users/<mxid>/_allow_cross_signing_replacement_without_uia`.
+   Note that replacing the keys changes the account's identity: every contact sees "identity changed".
+3. The current device is signed with the self-signing key.
+
+The secret *is* the master key — treat it like a password. Failures during login are only logged
+(the bot keeps working, its messages just stay flagged); `minimatrix devices cross-sign` makes them fatal.
+Use `--no-self-sign-keys` / `SELF_SIGN_KEYS=false` for personal accounts that already have cross-signing
+set up in another client, unless you deliberately want to replace that identity.
+
+Two processes that use the same Matrix account at the same time must use different `CRYPTO_STORE_PATH`
+directories (nio's SQLite store is not safe for concurrent writers) — and therefore need an explicit, shared
+`CROSS_SIGNING_SECRET`.
 
 ## Configuration
 
@@ -145,6 +176,8 @@ Configuration is resolved in this order (later overrides earlier):
 | `CRYPTO_STORE_PATH` / `crypto_store_path` | `--crypto-store-path` | `~/.local/share/minimatrix/crypto_store` |
 | `AUTH_METHOD` / `auth_method` | `--auth-method` | `password` |
 | `AUTO_JOIN` / `auto_join` | `--auto-join` | `false` |
+| `SELF_SIGN_KEYS` / `self_sign_keys` | `--no-self-sign-keys` | `true` |
+| `CROSS_SIGNING_SECRET` / `cross_signing_secret` | `--cross-signing-secret` | — (generated per crypto store) |
 | `LOGURU_LEVEL` | — | `DEBUG` |
 
 ### CLI Subcommands
@@ -154,11 +187,12 @@ Configuration is resolved in this order (later overrides earlier):
 | `rooms` | List joined rooms and pending invites |
 | `invites [list]` | List pending room invitations (with inviter, DM/Room type, timestamp) |
 | `invites accept --room ROOM_ID` | Accept a specific room invitation |
-| `send --room ROOM_ID [--file FILE]... [MESSAGE]` | Send a text message and/or files (reads message from stdin if omitted and no `--file` given) |
+| `send --room ROOM_ID [--file FILE]... [--html HTML] [MESSAGE]` | Send a text message and/or files (reads message from stdin if omitted and no `--file` given); `--html` adds a `formatted_body` |
 | `listen --room ROOM_ID` | Listen for messages and print to stdout |
 | `devices [list]` | List all devices registered on the homeserver |
 | `devices purge` | Delete all devices except the current one |
 | `devices import-keys [--delete-old-stores]` | Import megolm sessions from old crypto store DBs |
+| `devices cross-sign` | Upload cross-signing keys (if missing) and sign this device; exit 1 on failure |
 
 Use `minimatrix --help` or `minimatrix <subcommand> --help` for full usage.
 

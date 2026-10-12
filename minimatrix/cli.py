@@ -42,6 +42,8 @@ _ENV_MAP: dict[str, str] = {
     "keycloak_client_secret": "KEYCLOAK_CLIENT_SECRET",
     "jwt_login_type": "JWT_LOGIN_TYPE",
     "auto_join": "AUTO_JOIN",
+    "self_sign_keys": "SELF_SIGN_KEYS",
+    "cross_signing_secret": "CROSS_SIGNING_SECRET",
 }
 
 logger = glogger.bind(classname="matrix_cli")
@@ -112,7 +114,7 @@ def resolve_config(ns: argparse.Namespace) -> dict[str, Any]:
 
     Resolution order (lowest to highest priority): YAML file, environment
     variables, CLI arguments. Applies defaults for missing keys and
-    normalizes ``auto_join`` to bool.
+    normalizes ``auto_join`` and ``self_sign_keys`` to bool.
 
     Args:
         ns: Parsed argparse namespace from ``build_parser()``.
@@ -135,11 +137,14 @@ def resolve_config(ns: argparse.Namespace) -> dict[str, Any]:
     cfg.setdefault("keycloak_client_secret", "")
     cfg.setdefault("jwt_login_type", "com.famedly.login.token.oauth")
     cfg.setdefault("auto_join", False)
+    cfg.setdefault("self_sign_keys", True)
+    cfg.setdefault("cross_signing_secret", "")
 
-    # Normalize auto_join to bool (env vars come in as strings)
-    aj = cfg["auto_join"]
-    if isinstance(aj, str):
-        cfg["auto_join"] = aj.lower() in ("1", "true", "yes")
+    # Normalize bool flags (env vars come in as strings)
+    for flag in ("auto_join", "self_sign_keys"):
+        val = cfg[flag]
+        if isinstance(val, str):
+            cfg[flag] = val.lower() in ("1", "true", "yes")
 
     # Expand ~ in crypto store path
     cfg["crypto_store_path"] = str(Path(cfg["crypto_store_path"]).expanduser())
@@ -152,11 +157,14 @@ def resolve_config(ns: argparse.Namespace) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-async def _create_handler(cfg: dict[str, Any]) -> MatrixClientHandler:
+async def _create_handler(cfg: dict[str, Any], self_sign_keys: bool | None = None) -> MatrixClientHandler:
     """Create a MatrixClientHandler, login, and run initial sync.
 
     Args:
         cfg: Resolved configuration dict containing connection and auth settings.
+        self_sign_keys: Override for the ``self_sign_keys`` config flag. ``None``
+            uses the resolved config (default: on). Login never fails because
+            of a cross-signing problem; it is only logged.
 
     Returns:
         An authenticated and initially synced MatrixClientHandler instance.
@@ -180,6 +188,8 @@ async def _create_handler(cfg: dict[str, Any]) -> MatrixClientHandler:
         keycloak_client_id=cfg.get("keycloak_client_id") or None,
         keycloak_client_secret=cfg.get("keycloak_client_secret") or None,
         jwt_login_type=cfg.get("jwt_login_type") or None,
+        self_sign_keys=bool(cfg.get("self_sign_keys", True)) if self_sign_keys is None else self_sign_keys,
+        cross_signing_secret=cfg.get("cross_signing_secret") or None,
     )
     await handler.initial_sync(auto_join=bool(cfg.get("auto_join")))
     return handler
@@ -339,7 +349,30 @@ async def cmd_devices_import_keys(cfg: dict[str, Any], delete_old: bool) -> None
         await handler.close()
 
 
-async def cmd_send(cfg: dict[str, Any], room_id: str, message: str | None, files: list[str] | None) -> None:
+async def cmd_devices_cross_sign(cfg: dict[str, Any]) -> None:
+    """Upload the account's cross-signing keys (if missing) and sign this device.
+
+    Unlike the implicit self-signing during login, a failure here is fatal and
+    exits with status 1, so the result can be checked in scripts.
+
+    Args:
+        cfg: Resolved configuration dict.
+    """
+    from minimatrix.cross_signing import CrossSigningError
+
+    handler = await _create_handler(cfg, self_sign_keys=False)
+    try:
+        await handler.ensure_cross_signed(cfg.get("cross_signing_secret") or None)
+    except CrossSigningError as exc:
+        logger.error("Cross-signing failed: {}", exc)
+        sys.exit(1)
+    finally:
+        await handler.close()
+
+
+async def cmd_send(
+    cfg: dict[str, Any], room_id: str, message: str | None, files: list[str] | None, html: str | None = None
+) -> None:
     """Send a text message and/or files to a room.
 
     Args:
@@ -347,12 +380,13 @@ async def cmd_send(cfg: dict[str, Any], room_id: str, message: str | None, files
         room_id: The Matrix room ID to send to.
         message: Optional plain-text message body.
         files: Optional list of file paths to upload and send.
+        html: Optional HTML rendering of ``message`` sent as ``formatted_body``.
     """
     handler = await _create_handler(cfg)
     try:
         await handler.trust_devices_in_room(room_id)
         if message:
-            await handler.send_message(room_id, message)
+            await handler.send_message(room_id, message, html=html)
             logger.info("Message sent to {}", room_id)
         for fp in files or []:
             path = Path(fp)
@@ -688,6 +722,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Automatically accept pending room invitations on startup",
     )
+    parser.add_argument(
+        "--no-self-sign-keys",
+        dest="self_sign_keys",
+        action="store_false",
+        default=None,
+        help="Do not cross-sign this device after login (default: sign it, see SELF_SIGN_KEYS)",
+    )
+    parser.add_argument(
+        "--cross-signing-secret",
+        dest="cross_signing_secret",
+        help="Secret the cross-signing keys are derived from (default: generated once per crypto store)",
+    )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -695,6 +741,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp_send = subparsers.add_parser("send", help="Send a message and/or files to a room")
     sp_send.add_argument("--room", "-r", required=True, help="Room ID (e.g. !abc:example.com)")
     sp_send.add_argument("--file", "-f", action="append", dest="files", help="File to send (can be repeated)")
+    sp_send.add_argument(
+        "--html", dest="html", default=None, help="HTML rendering of the message (sent as formatted_body)"
+    )
     sp_send.add_argument("message", nargs="?", default=None, help="Message text (reads from stdin if omitted)")
 
     # --- listen ---
@@ -723,6 +772,7 @@ def build_parser() -> argparse.ArgumentParser:
     dev_sub = sp_devices.add_subparsers(dest="devices_command")
     dev_sub.add_parser("list", help="List all registered devices (default)")
     dev_sub.add_parser("purge", help="Delete all devices except the current one")
+    dev_sub.add_parser("cross-sign", help="Upload cross-signing keys (if missing) and sign this device")
     sp_dev_import = dev_sub.add_parser("import-keys", help="Import megolm sessions from old crypto store DBs")
     sp_dev_import.add_argument(
         "--delete-old-stores",
@@ -786,7 +836,7 @@ def main() -> None:
                 message = sys.stdin.read().strip()
                 if not message:
                     parser.error("Empty message from stdin")
-            loop.run_until_complete(cmd_send(cfg, args.room, message, files))
+            loop.run_until_complete(cmd_send(cfg, args.room, message, files, html=args.html))
         elif args.command == "listen":
             loop.run_until_complete(cmd_listen(cfg, args.room))
         elif args.command == "chat":
@@ -796,6 +846,8 @@ def main() -> None:
                 loop.run_until_complete(cmd_devices_purge(cfg))
             elif getattr(args, "devices_command", None) == "import-keys":
                 loop.run_until_complete(cmd_devices_import_keys(cfg, args.delete_old_stores))
+            elif getattr(args, "devices_command", None) == "cross-sign":
+                loop.run_until_complete(cmd_devices_cross_sign(cfg))
             else:
                 loop.run_until_complete(cmd_devices_list(cfg))
     finally:

@@ -15,7 +15,7 @@ consumers are not affected; the CLI entry point explicitly enables it via
 ``configure_logging()`` and ``glogger.enable("minimatrix")``.
 """
 
-__version__ = "0.0.13"
+__version__ = "0.0.15"
 
 import logging
 import os

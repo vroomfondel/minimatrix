@@ -328,3 +328,80 @@ def test_build_parser_devices_import_keys_delete_old() -> None:
     assert args.command == "devices"
     assert args.devices_command == "import-keys"
     assert args.delete_old_stores is True
+
+
+# ---------------------------------------------------------------------------
+# Cross-signing options
+# ---------------------------------------------------------------------------
+
+
+def test_build_parser_devices_cross_sign() -> None:
+    """Verifies that 'devices cross-sign' is parsed correctly."""
+    parser = build_parser()
+    args = parser.parse_args(["devices", "cross-sign"])
+    assert args.command == "devices"
+    assert args.devices_command == "cross-sign"
+
+
+def test_build_parser_self_sign_flag_defaults_to_none() -> None:
+    """Without --no-self-sign-keys the namespace value is None so lower-priority config applies."""
+    parser = build_parser()
+    args = parser.parse_args(["rooms"])
+    assert args.self_sign_keys is None
+    assert args.cross_signing_secret is None
+
+
+def test_build_parser_no_self_sign_keys() -> None:
+    """--no-self-sign-keys and --cross-signing-secret are global options."""
+    parser = build_parser()
+    args = parser.parse_args(["--no-self-sign-keys", "--cross-signing-secret", "s3cret", "rooms"])
+    assert args.self_sign_keys is False
+    assert args.cross_signing_secret == "s3cret"
+
+
+def test_build_parser_send_html() -> None:
+    """'send --html' carries the HTML body next to the plain message."""
+    parser = build_parser()
+    args = parser.parse_args(["send", "--room", "!abc:example.com", "--html", "<b>Hi</b>", "Hi"])
+    assert args.html == "<b>Hi</b>"
+    assert args.message == "Hi"
+
+
+def _namespace_without_cli_values(config: Path) -> argparse.Namespace:
+    """Build a namespace with every _ENV_MAP key unset, like a bare invocation."""
+    from minimatrix.cli import _ENV_MAP
+
+    ns = argparse.Namespace(config=str(config))
+    for key in _ENV_MAP:
+        setattr(ns, key, None)
+    return ns
+
+
+def test_resolve_config_self_sign_keys_default_on(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Self-signing is enabled by default and the secret is empty (auto-generated per store)."""
+    monkeypatch.delenv("SELF_SIGN_KEYS", raising=False)
+    monkeypatch.delenv("CROSS_SIGNING_SECRET", raising=False)
+    cfg = resolve_config(_namespace_without_cli_values(tmp_path / "no.yaml"))
+    assert cfg["self_sign_keys"] is True
+    assert cfg["cross_signing_secret"] == ""
+
+
+@pytest.mark.parametrize("value,expected", [("false", False), ("0", False), ("no", False), ("true", True), ("1", True)])
+def test_resolve_config_self_sign_keys_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, value: str, expected: bool
+) -> None:
+    """SELF_SIGN_KEYS from the environment is normalised to bool."""
+    monkeypatch.setenv("SELF_SIGN_KEYS", value)
+    monkeypatch.setenv("CROSS_SIGNING_SECRET", "from-env")
+    cfg = resolve_config(_namespace_without_cli_values(tmp_path / "no.yaml"))
+    assert cfg["self_sign_keys"] is expected
+    assert cfg["cross_signing_secret"] == "from-env"
+
+
+def test_resolve_config_no_self_sign_cli_overrides_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """--no-self-sign-keys wins over SELF_SIGN_KEYS=true."""
+    monkeypatch.setenv("SELF_SIGN_KEYS", "true")
+    ns = _namespace_without_cli_values(tmp_path / "no.yaml")
+    ns.self_sign_keys = False
+    cfg = resolve_config(ns)
+    assert cfg["self_sign_keys"] is False

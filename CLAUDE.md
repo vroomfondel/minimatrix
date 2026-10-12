@@ -41,9 +41,10 @@ The venv lives at `.venv/` and uses Python 3.14. The Makefile auto-activates it 
 ### Module Responsibilities
 
 - **`__init__.py`** — Version (`__version__`), loguru configuration (`configure_logging()`).
-- **`cli.py`** — CLI entry point (argparse). Subcommands: `send` (text and/or files via `--file`/`-f`), `listen`, `rooms`, `invites` (with `list`/`accept` sub-subcommands). Handles config merging (YAML/env/CLI) and the asyncio event loop. Uses `MatrixClientHandler` for all Matrix operations.
+- **`cli.py`** — CLI entry point (argparse). Subcommands: `send` (text and/or files via `--file`/`-f`, optional `--html`), `listen`, `chat`, `rooms`, `invites` (with `list`/`accept` sub-subcommands), `devices` (`list`/`purge`/`import-keys`/`cross-sign`). Handles config merging (YAML/env/CLI) and the asyncio event loop. Uses `MatrixClientHandler` for all Matrix operations.
 - **`matrix_client.py`** — `MatrixClientHandler` class wrapping `nio.AsyncClient`. Handles login dispatch (password/SSO/JWT), E2E key management, TOFU device trust, encrypted text messaging, file uploads (images, documents, audio, video with automatic MIME detection), sync loops. SSO and JWT login handlers are lazily imported.
 - **`config.py`** — `MiniMatrixConfig` frozen dataclass, loaded from env vars via `from_env()`. Currently not used by the CLI (which has its own config resolution in `cli.py`).
+- **`cross_signing.py`** — Hand-rolled cross-signing (nio has none): derives master/self-signing/user-signing keys from a secret (HMAC-SHA256 → ed25519 seed), uploads them on first use (`/keys/device_signing/upload`, no UIA thanks to MSC3967) and signs the own device (`/keys/signatures/upload`). `load_or_create_secret()` keeps a generated secret in `<crypto_store>/cross_signing_secret` when none is configured. Pure functions (`canonical_json`, `sign_json`, ...) are unit-tested against `olm.utility.ed25519_verify`.
 - **`jwt_login.py`** — `JWTLoginHandler`: Keycloak ROPC token acquisition + Matrix JWT login via `login_raw()`. Supports three login types (`com.famedly.login.token.oauth`, `com.famedly.login.token`, `org.matrix.login.jwt`).
 - **`sso_login.py`** — `SSOLoginHandler`: Programmatic Keycloak SSO flow via HTML form parsing. Fragile; JWT auth is preferred.
 
@@ -51,6 +52,10 @@ The venv lives at `.venv/` and uses Python 3.14. The Makefile auto-activates it 
 
 - `MatrixClientHandler.login()` dispatches to `_login_sso()` or `_login_jwt()` which lazily import their respective handler modules to avoid loading aiohttp at import time.
 - E2E encryption uses TOFU (Trust On First Use) — devices are automatically verified on first encounter via `trust_devices_in_room()`.
+- `MatrixClientHandler.login()` has a **mandatory** keyword-only `self_sign_keys: bool` so every caller decides explicitly whether the device gets cross-signed after login (CLI default: on). Cross-signing failures at login are logged, never fatal; `devices cross-sign` makes them fatal.
+- `sync_forever()` loops around nio's benign `LocalProtocolError("No key query required.")` race (nio schedules its own `keys_query` task in `sync_forever` while `trust_devices_for_user()` runs one too); any other `LocalProtocolError` propagates.
+- `send_message()`/`send_file()` return a bool and swallow errors by default; `strict=True` raises `MessageSendError` for callers that must retry. `send_message(html=...)` adds `formatted_body`.
+- `join_room()` accepts `!id:server` or `#alias:server` and returns the resolved room ID.
 - The CLI creates a fresh `MatrixClientHandler` per subcommand invocation (connect, login, sync, act, close).
 - **Cross-run persistence**: `_recover_device_id()` reads the `device_id` from the SQLite crypto store DB (`<user>_*.db`) so reconnections reuse the same device. After login, credentials are cached in `session.json` (inside the crypto store dir); `_try_restore_login()` restores from this cache on subsequent runs, skipping full re-authentication.
 
@@ -79,3 +84,5 @@ Config resolution: YAML (`~/.config/minimatrix/config.yaml`) < env vars < CLI ar
 | `KEYCLOAK_CLIENT_SECRET` | — |
 | `JWT_LOGIN_TYPE` | `com.famedly.login.token.oauth` |
 | `AUTO_JOIN` | `false` (truthy: `1`, `true`, `yes`) |
+| `SELF_SIGN_KEYS` | `true` (CLI: `--no-self-sign-keys`) |
+| `CROSS_SIGNING_SECRET` | — (generated once per crypto store when empty) |
