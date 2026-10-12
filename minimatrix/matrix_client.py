@@ -390,11 +390,14 @@ class MatrixClientHandler:
 
     # -- E2E Device Trust (TOFU) -----------------------------------------------
 
-    async def trust_devices_for_user(self, user_id: str) -> None:
-        """Auto-trust all devices of a given user (TOFU).
+    async def trust_devices_for_user(self, user_id: str) -> int:
+        """Auto-trust all non-deleted devices of a given user (TOFU).
 
         Args:
             user_id: The fully-qualified Matrix user ID whose devices to trust.
+
+        Returns:
+            The number of devices that were newly verified.
         """
         if self._client.olm:
             self._client.olm.users_for_key_query.add(user_id)
@@ -402,37 +405,50 @@ class MatrixClientHandler:
             await self._client.keys_query()
         except LocalProtocolError:
             logger.debug("No key query required for {} — using existing device store", user_id)
-        device_store = self._client.device_store
-        if user_id not in device_store:
-            return
-        for device_id, olm_device in device_store[user_id].items():
+        # nio's DeviceStore has no __contains__ and iterates OlmDevices, so a
+        # ``user_id in device_store`` check is always False. active_user_devices()
+        # yields nothing for unknown users and already skips deleted devices.
+        trusted = 0
+        for olm_device in self._client.device_store.active_user_devices(user_id):
             if not self._client.is_device_verified(olm_device):
-                logger.info("Trusting device {} of {}", device_id, user_id)
+                logger.info("Trusting device {} of {}", olm_device.id, user_id)
                 self._client.verify_device(olm_device)
+                trusted += 1
+        return trusted
 
-    async def trust_all_allowed_devices(self, allowed_users: Sequence[str]) -> None:
+    async def trust_all_allowed_devices(self, allowed_users: Sequence[str]) -> int:
         """Trust devices of all allowed users.
 
         Args:
             allowed_users: Sequence of fully-qualified Matrix user IDs whose devices
                 should be trusted.
-        """
-        for user_id in allowed_users:
-            await self.trust_devices_for_user(user_id)
 
-    async def trust_devices_in_room(self, room_id: str) -> None:
+        Returns:
+            The total number of devices that were newly verified.
+        """
+        trusted = 0
+        for user_id in allowed_users:
+            trusted += await self.trust_devices_for_user(user_id)
+        return trusted
+
+    async def trust_devices_in_room(self, room_id: str) -> int:
         """Trust all devices of all members in a room (TOFU).
 
         Args:
             room_id: The Matrix room ID whose members' devices should be trusted.
+
+        Returns:
+            The total number of devices that were newly verified.
         """
         room = self._client.rooms.get(room_id)
         if not room:
-            return
+            return 0
+        trusted = 0
         for user_id in room.users:
             if user_id == self._client.user_id:
                 continue
-            await self.trust_devices_for_user(user_id)
+            trusted += await self.trust_devices_for_user(user_id)
+        return trusted
 
     # -- Messaging -------------------------------------------------------------
 
