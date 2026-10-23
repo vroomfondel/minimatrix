@@ -5,9 +5,7 @@ ARG UID=1200
 ARG GID=1201
 ARG UNAME=pythonuser
 
-#=============================================================================
-# builder: toolchain for wheels without prebuilt binaries (e.g. python-olm)
-#=============================================================================
+# toolchain only for dependencies without a prebuilt wheel for the target platform
 FROM python:${python_version}-${debian_version} AS builder
 
 # repeat without defaults in this build-stage
@@ -30,15 +28,12 @@ COPY --chown=${UID}:${GID} requirements.txt ./
 COPY --chown=${UID}:${GID} README.md pyproject.toml ./
 COPY --chown=${UID}:${GID} minimatrix ./minimatrix
 
-# installs into /home/${UNAME}/.local, the editable install points to /app
+# editable install: /home/${UNAME}/.local references /app, both are copied into the runtime stage
 RUN runuser -u ${UNAME} -- env PATH="/home/${UNAME}/.local/bin:$PATH" \
         pip3 install --no-cache-dir --upgrade -r ./requirements.txt && \
     runuser -u ${UNAME} -- env PATH="/home/${UNAME}/.local/bin:$PATH" \
         pip install --no-cache-dir -e .
 
-#=============================================================================
-# runtime
-#=============================================================================
 FROM python:${python_version}-${debian_version}
 
 # repeat without defaults in this build-stage
