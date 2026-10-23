@@ -1,0 +1,15 @@
+# Allowlist for Dockerfile: only what its COPY instructions need is sent to the builder.
+# (Takes precedence over .dockerignore for Docker BuildKit and Podman/Buildah.)
+*
+!runcli.sh
+!requirements.txt
+!README.md
+!pyproject.toml
+!minimatrix
+!minimatrix/**
+
+# never ship caches, local overrides or secrets, even below allowed paths
+**/__pycache__
+**/*.local
+**/*.local.*
+**/docker-config
